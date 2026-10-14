@@ -656,7 +656,9 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(codex.resume_id([tui, "-m", "gpt-5", "resume", uuid]), uuid)
         self.assertEqual(codex.resume_id([tui, "fork", uuid]), "")
         self.assertEqual(codex.resume_id([tui, "resume", "--", uuid]), uuid)
-        self.assertTrue(codex.is_tui([tui, "--", "exec this plan"]))
+        self.assertTrue(codex.is_tui([tui, "--", "exec"]))  # a prompt, not the subcommand
+        self.assertTrue(codex.is_tui([tui, "--", "--help"]))
+        self.assertEqual(codex.resume_id([tui, "--", "resume", uuid]), "")
 
     def test_process_listing_linux_and_ps(self):
         root = tempfile.mkdtemp()

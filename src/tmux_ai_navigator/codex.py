@@ -44,28 +44,30 @@ def home():
 # ---- the TUI processes and their panes -----------------------------------------------------
 
 def positional(argv):
-    """The positional arguments (subcommand, prompt, ids), skipping flags and their values.
-    A flag that ends the TUI ("--help") is returned as if it were a subcommand."""
+    """[(argument, literal)] for the positional arguments, skipping flags and their values.
+    `literal` is true after "--" (prompt text, never a subcommand). A flag that ends the TUI
+    ("--help") is returned as if it were a subcommand."""
     out, skip, rest = [], False, False
     for tok in argv[1:]:
         if skip:
             skip = False
         elif rest:
-            out.append(tok)
+            out.append((tok, True))
         elif tok == "--":
-            rest = True  # everything after is positional
+            rest = True
         elif tok.startswith("-"):
             if tok in NOT_TUI:
-                out.append(tok)
+                out.append((tok, False))
             skip = tok in VALUE_FLAGS
         else:
-            out.append(tok)
+            out.append((tok, False))
     return out
 
 
 def first_arg(argv):
+    """The subcommand (or "" for none: a prompt after "--" isn't one)."""
     args = positional(argv)
-    return args[0] if args else ""
+    return args[0][0] if args and not args[0][1] else ""
 
 
 def is_tui(argv):
@@ -78,8 +80,8 @@ def resume_id(argv):
     """The conversation id from `codex resume <id>`, if given. (`codex fork <id>` names the
     source conversation; the fork itself gets a new id.)"""
     args = positional(argv)
-    if len(args) >= 2 and args[0] == "resume" and UUID.match(args[1]):
-        return args[1]
+    if len(args) >= 2 and args[0] == ("resume", False) and UUID.match(args[1][0]):
+        return args[1][0]
     return ""
 
 
