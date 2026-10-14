@@ -4,6 +4,7 @@
 #   set -g @ainav-later-key 'u'    # prefix key that toggles "later" on the current pane's agent
 #   set -g @ainav-extras 'cmd'     # extras command (badge/title/preview lines per session; see README)
 #   set -g @ainav-extras-interval 5
+#   set -g @ainav-notify 'tmux,system'  # notifications: tmux, system, terminal, bell, or off
 # Manual install: run-shell /path/to/tmux-ai-navigator/tmux-ai-navigator.tmux
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$DIR/bin/tmux-ai-nav"
@@ -20,3 +21,6 @@ done
 # leaving the screen by detaching counts too; the detaching client is still listed while
 # its hook runs, so look a moment later (the detach time is what gets recorded)
 tmux set-hook -g "client-detached[87]" "run-shell -b \"'$BIN' seen --delay 0.5\""
+
+# notifications when an agent finishes or needs you (see README; @ainav-notify 'off' disables)
+tmux run-shell -b "'$BIN' watch --start"

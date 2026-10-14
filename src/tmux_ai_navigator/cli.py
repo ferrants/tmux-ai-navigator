@@ -5,6 +5,7 @@
   tmux-ai-nav list [--json] [--all]            print the agents found
   tmux-ai-nav seen                             record which panes are on screen (tmux hooks)
   tmux-ai-nav later --pane PANE                toggle the "later" flag on the agent in PANE
+  tmux-ai-nav watch [--start|--stop]           notify when agents finish or need you
   tmux-ai-nav demo                             run the picker on made-up sessions
 """
 import argparse
@@ -12,6 +13,7 @@ import json
 import locale
 import os
 import shlex
+import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -181,6 +183,28 @@ def cmd_later(args):
     return 0
 
 
+def cmd_watch(args):
+    """--start (from the plugin): replace this server's watcher with a fresh detached one,
+    or just stop it when notifications are off. --stop: stop it."""
+    from . import notify
+
+    disc = discovery(args)
+    if not (args.start or args.stop):
+        return notify.watch(disc)
+    server = disc.server()
+    notify.stop_existing(disc.state.dir, server)
+    if args.stop or (tmux_option(disc.tmux, "@ainav-notify") or "tmux").strip() == "off":
+        return 0
+    cmd = self_command() + server_flags(args)
+    if args.sessions_dir:
+        cmd += ["--sessions-dir", args.sessions_dir]
+    if args.state_dir:
+        cmd += ["--state-dir", args.state_dir]
+    subprocess.Popen(cmd + ["watch"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    return 0
+
+
 def cmd_demo(args):
     from . import demo
     from .ui import pick
@@ -227,6 +251,11 @@ def main(argv=None):
     p.add_argument("--here", help="pane the picker was opened from")
     p.add_argument("--session", help="tmux session the picker was opened from")
     p.set_defaults(func=cmd_ui)
+
+    p = sub.add_parser("watch", help="notify when agents finish or need you (runs until tmux exits)")
+    p.add_argument("--start", action="store_true", help="start a detached watcher, replacing a running one")
+    p.add_argument("--stop", action="store_true", help="stop this tmux server's watcher")
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("demo", help="run the picker on made-up sessions (no tmux needed)")
     p.set_defaults(func=cmd_demo)

@@ -8,7 +8,7 @@ you last looked**, and ones you flagged for **later**. Then come sessions that a
 active today, and older ones. A preview shows each session's last prompt and reply. You can
 search the list and press Enter to jump to that pane.
 
-![The picker, with made-up sessions](docs/demo.png)
+![The picker with made-up sessions: moving through the list, searching, filtering, grouping by project and flagging for later](docs/demo.gif)
 
 Try it without any sessions of your own: `bin/tmux-ai-nav demo`.
 
@@ -49,6 +49,7 @@ set -g @ainav-key 'a'                # prefix key that opens/closes the picker (
 set -g @ainav-later-key 'u'          # prefix key: flag the current pane's session for later (default u)
 set -g @ainav-extras 'command'       # extras command, see below (default none)
 set -g @ainav-extras-interval '5'    # seconds between extras runs (default 5)
+set -g @ainav-notify 'tmux'          # notifications, see below (default tmux)
 ```
 
 ## Use
@@ -90,6 +91,38 @@ TERM is upgraded to its `-256color` variant for the picker, and tmux maps colors
 clients that can't show them. On 8-color terminals it falls back to the basic ANSI colors.
 
 From scripts: `tmux-ai-nav list [--json] [--all]`.
+
+## Notifications
+
+A small background watcher tells you when a session finishes or starts waiting for you,
+unless its pane is already on screen. It only notifies if the session is still in that
+state a moment later, so quick back-and-forth doesn't spam you.
+
+```tmux
+set -g @ainav-notify 'tmux,system'   # any of: tmux, system, terminal, bell; or off
+set -g @ainav-notify-sound 'on'      # on (system sounds), off, or a sound file
+```
+
+| option | default | |
+|---|---|---|
+| `@ainav-notify` | `tmux` | `tmux`: a message in the status line. `system`: a desktop notification (`notify-send` on Linux; `terminal-notifier` or `osascript` on macOS). `terminal`: asks your terminal for a desktop notification (OSC 777; works over SSH in terminals that support it, such as kitty, WezTerm, foot and Ghostty). `bell`: rings the terminal bell. `off`: no watcher. |
+| `@ainav-notify-on` | `done,waiting` | which events to notify about |
+| `@ainav-notify-sound` | `off` | `on` plays a system sound (`paplay`/`pw-play`/`aplay` on Linux, `afplay` on macOS) |
+| `@ainav-notify-sound-done`, `@ainav-notify-sound-waiting` | | a sound file per event |
+| `@ainav-notify-delay` | `1` | seconds the new state must hold |
+| `@ainav-notify-visible` | `off` | `on` also notifies for panes that are on screen |
+| `@ainav-notify-command` | | a command to run as well, with `AINAV_EVENT` (`done` or `waiting`), `AINAV_TITLE`, `AINAV_PROJECT`, `AINAV_WINDOW`, `AINAV_PANE`, `AINAV_TMUX_SESSION`, `AINAV_SESSION_ID`, `AINAV_CWD` and `AINAV_MESSAGE` set |
+
+Options are re-read every few seconds. Turning `@ainav-notify` on or off takes effect when
+the plugin is loaded again (`tmux source ~/.tmux.conf`), which also restarts the watcher.
+There is one watcher per tmux server. It exits with the server and re-reads only the session
+files that changed, so it costs next to nothing while idle.
+
+For example, a phone push through [ntfy](https://ntfy.sh):
+
+```tmux
+set -g @ainav-notify-command 'curl -s -d "$AINAV_MESSAGE" ntfy.sh/my-agents'
+```
 
 ## Extras
 
@@ -146,6 +179,8 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
 - **Jumping.** One `switch-client -c <client> -t '$session:@window.%pane'` switches the
   client that pressed the key to that session, window and pane. Naming the session handles
   windows linked into several sessions.
+- **Notifications.** `tmux-ai-nav watch` polls the session files twice a second and only
+  looks at panes and titles when a session's status actually changes.
 - **Done.** tmux hooks (`after-select-window`, `after-select-pane`, `client-session-changed`, …)
   run `tmux-ai-nav seen`, which records the panes on screen and the panes that just left it.
   A session is "done" when it went idle after real work, later than its pane was last seen.
@@ -172,6 +207,7 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
 Remove the plugin line from `~/.tmux.conf`, then:
 
 ```sh
+~/.tmux/plugins/tmux-ai-navigator/bin/tmux-ai-nav watch --stop   # the notification watcher
 for h in after-select-pane after-select-window session-window-changed client-session-changed \
          client-attached client-detached; do tmux set-hook -gu "$h[87]"; done
 tmux unbind a; tmux unbind u    # or your @ainav-key / @ainav-later-key
@@ -189,6 +225,7 @@ bin/tmux-ai-nav demo                    # the picker on made-up sessions
 ## Roadmap
 
 - A popup on tmux 3.2+.
+- Clicking a desktop notification to jump to its pane.
 - Other agents (Codex, …).
 - A preview of the end of each session's pane, and a status-line count.
 

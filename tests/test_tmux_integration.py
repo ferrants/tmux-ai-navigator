@@ -185,6 +185,61 @@ class TmuxIntegration(unittest.TestCase):
             client.wait(timeout=5)
             client.stdin.close()
 
+    def set_status(self, status):
+        path = os.path.join(self.sessions, f"{self.agent_pid}.json")
+        with open(path) as f:
+            d = json.load(f)
+        d.update(status=status, statusUpdatedAt=int(time.time() * 1000))
+        with open(path + ".tmp", "w") as f:
+            json.dump(d, f)
+        os.replace(path + ".tmp", path)
+
+    def test_watcher_notifies_and_restarts(self):
+        log = os.path.join(tempfile.mkdtemp(), "events")
+        state_dir = tempfile.mkdtemp()
+        for k, v in (("@ainav-notify", "none"), ("@ainav-notify-delay", "0"),
+                     ("@ainav-notify-command", f'echo "$AINAV_EVENT $AINAV_SESSION_ID" >> {log}')):
+            self.t.run("set", "-g", k, v)
+        bin_ = os.path.join(HERE, "..", "bin", "tmux-ai-nav")
+        start = [bin_, "-L", SOCK, "--sessions-dir", self.sessions, "--state-dir", state_dir, "watch", "--start"]
+        server = self.t.server_pid()
+        lock = os.path.join(state_dir, f"watch-{server}.lock")
+
+        def watcher_pid():
+            try:
+                with open(lock) as f:
+                    pid = int(f.read() or 0)
+                os.kill(pid, 0)
+                return pid
+            except (OSError, ValueError):
+                return None
+        try:
+            subprocess.run(start, check=True, env=self.env)
+            first = wait_for(watcher_pid)
+            self.assertTrue(first, "watcher did not start")
+            subprocess.run(start, check=True, env=self.env)  # re-sourcing the config: replaced, not doubled
+            second = wait_for(lambda: (watcher_pid() or first) != first and watcher_pid())
+            self.assertTrue(second, "watcher was not replaced")
+            self.assertFalse(wait_for(lambda: not os.path.exists(f"/proc/{first}") or
+                                      subprocess.run(["kill", "-0", str(first)], capture_output=True).returncode,
+                                      timeout=3) is None)
+            time.sleep(1.0)  # let it take its first snapshot
+            self.set_status("busy")
+            time.sleep(1.0)
+            self.set_status("idle")
+            got = wait_for(lambda: os.path.exists(log) and open(log).read().strip(), timeout=6)
+            self.assertEqual(got, "done test-session")
+            self.set_status("waiting")
+            got = wait_for(lambda: open(log).read().count("\n") >= 2 and open(log).read(), timeout=6)
+            self.assertIn("waiting test-session", got or "")
+        finally:
+            pid = watcher_pid()
+            if pid:
+                os.kill(pid, 15)
+            self.set_status("idle")
+            for k in ("@ainav-notify", "@ainav-notify-delay", "@ainav-notify-command"):
+                self.t.run("set", "-gu", k, check=False)
+
     def attach(self, session):
         return subprocess.Popen(pty_command(f"tmux -L {SOCK} attach -t {session}"),
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

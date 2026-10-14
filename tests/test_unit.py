@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from tmux_ai_navigator import agents, claude, extras, proc, state, transcript  # noqa: E402
+from tmux_ai_navigator import agents, claude, extras, notify, proc, state, transcript  # noqa: E402
 from tmux_ai_navigator.agents import Agent, arrange, clean_title, fmt_age, map_to_panes, pick_title, sort_agents  # noqa: E402
 from tmux_ai_navigator.tmux import Pane  # noqa: E402
 from tmux_ai_navigator.ui import build_items, fit, matches, width  # noqa: E402
@@ -400,3 +400,116 @@ class TranscriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotifyTests(unittest.TestCase):
+    def snap(self, **statuses):
+        return {(1, sid): (st, 1000.0, 0.0) for sid, st in statuses.items()}
+
+    def test_events(self):
+        prev = self.snap(a="busy", b="idle", c="busy", d="busy", e="waiting")
+        cur = self.snap(a="idle", b="waiting", c="shell", d="busy", e="waiting", f="waiting")
+        self.assertEqual(sorted(notify.events(prev, cur)), [((1, "a"), "done"), ((1, "b"), "waiting"), ((1, "c"), "done")])
+
+    def test_quick_turn_after_start_is_not_done(self):
+        prev = {(1, "a"): ("busy", 100.0, 95.0)}
+        self.assertEqual(notify.events(prev, {(1, "a"): ("idle", 101.0, 95.0)}), [])
+
+    def test_snapshot_skips_non_interactive_and_bad(self):
+        snap = notify.snapshot([{"pid": 7, "sessionId": "a", "status": "busy", "statusUpdatedAt": 2000},
+                                {"pid": 8, "sessionId": "b", "kind": "bg"}, {"pid": 9, "sessionId": 5},
+                                {"sessionId": "nopid"}])
+        self.assertEqual(snap, {(7, "a"): ("busy", 2.0, 0.0)})
+
+    def test_stale_file_for_same_session_does_not_mask_live_one(self):
+        stale = {"pid": 5, "sessionId": "a", "status": "idle"}
+        prev = notify.snapshot([stale, {"pid": 6, "sessionId": "a", "status": "busy"}])
+        cur = notify.snapshot([stale, {"pid": 6, "sessionId": "a", "status": "idle"}])
+        self.assertEqual(notify.events(prev, cur), [((6, "a"), "done")])
+
+    def test_sound_choice(self):
+        self.assertEqual(notify.sound_file("done", {"notify-sound": "off"}), "")
+        self.assertEqual(notify.sound_file("done", {"notify-sound": "/x.mp3"}), "/x.mp3")
+        self.assertEqual(notify.sound_file("done", {"notify-sound": "on", "notify-sound-done": "/d.oga"}), "/d.oga")
+        self.assertTrue(notify.sound_file("waiting", {"notify-sound": "on"}))
+
+    def test_osc_strips_separators(self):
+        self.assertEqual(notify.osc_notify("a;b", "c\x1bd"), b"\x1b]777;notify;ab;cd\x1b\\")
+
+    def test_watcher_delay_still_and_visibility(self):
+        files = [{"pid": ag("a").pid, "sessionId": "a", "status": "busy"}, {"pid": ag("b").pid, "sessionId": "b", "status": "busy"}]
+
+        class Files:
+            def read(self):
+                return files
+
+        class Disc:
+            tmux = None
+            files = Files()
+
+            def agents(self, record_seen=True):
+                return [ag("a"), ag("b", on_screen=True)]
+
+        sent, now = [], [100.0]
+        w = notify.Watcher(Disc(), deliver_fn=lambda t, a, k, o: sent.append((a.session_id, k)),
+                           clock=lambda: now[0])
+        w._opts_at = 1e18  # keep the defaults (delay 1s, done+waiting, skip visible)
+        w.step()
+        files[0]["status"] = files[1]["status"] = "idle"
+        w.step()
+        self.assertEqual(sent, [])            # delay not over yet
+        now[0] = 101.5
+        w.step()
+        self.assertEqual(sent, [("a", "done")])  # b is on screen
+        files[0]["status"] = "busy"
+        w.step()
+        files[0]["status"] = "idle"
+        now[0] = 102.0
+        w.step()
+        files[0]["status"] = "busy"            # back to work before the delay ended
+        now[0] = 104.0
+        w.step()
+        self.assertEqual(sent, [("a", "done")])
+
+    def test_pending_dropped_when_state_does_not_hold(self):
+        files = [{"pid": ag("a").pid, "sessionId": "a", "status": "busy"}]
+
+        class Files:
+            def read(self):
+                return files
+
+        class Disc:
+            tmux = None
+            files = Files()
+
+            def agents(self, record_seen=True):
+                return [ag("a")]
+
+        sent, now = [], [100.0]
+        w = notify.Watcher(Disc(), deliver_fn=lambda t, a, k, o: sent.append(k), clock=lambda: now[0])
+        w._opts_at = 1e18
+        w.opts["notify-on"] = "done"
+        w.step()
+        for st in ("idle", "waiting", "idle"):  # idle never held for the full second
+            files[0]["status"] = st
+            now[0] += 0.4
+            w.step()
+        now[0] += 0.3
+        w.step()
+        self.assertEqual(sent, [])
+
+    def test_stop_existing_ignores_stale_lock(self):
+        d = tempfile.mkdtemp()
+        with open(notify.lock_path(d, 42), "w") as f:
+            f.write("1234567\n")
+        killed = []
+        real, notify.os.kill = notify.os.kill, lambda pid, sig: killed.append(pid)
+        try:
+            notify.stop_existing(d, 42)
+            self.assertEqual(killed, [])
+            lock = notify.hold_lock(d, 42)
+            notify.stop_existing(d, 42)  # held, but by us: never signal ourselves
+            self.assertEqual(killed, [])
+            lock.close()
+        finally:
+            notify.os.kill = real
