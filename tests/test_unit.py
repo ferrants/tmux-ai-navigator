@@ -460,7 +460,7 @@ class NotifyTests(unittest.TestCase):
             self.assertEqual(notify.sound_file("done", {"notify-sound": "off"}), "")
             self.assertEqual(notify.sound_file("done", {"notify-sound": "/x.mp3"}), "/x.mp3")
             self.assertEqual(notify.sound_file("done", {"notify-sound": "on", "notify-sound-done": "/d.oga"}), "/d.oga")
-            self.assertIn("/sounds/", notify.sound_file("waiting", {"notify-sound": "system"}))
+            self.assertIn("/sounds/", notify.sound_file("waiting", {"notify-sound": "system"}).lower())
             # per-event setting works even with the main switch off
             self.assertTrue(notify.sound_file("done", {"notify-sound": "off", "notify-sound-done": "soft"})
                             .startswith(d))
