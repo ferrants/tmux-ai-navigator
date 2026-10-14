@@ -15,15 +15,16 @@ Try it without any sessions of your own: `bin/tmux-ai-nav demo`.
 ## Requirements
 
 - Linux or macOS.
-- tmux 3.0 or newer. The picker opens in a temporary window (a popup for tmux 3.2+ is
-  planned).
+- tmux 3.0 or newer. On tmux 3.2+ the picker opens in a popup; on 3.0 and 3.1 it opens in
+  a temporary window.
 - Python 3.8 or newer, standard library only.
 - Claude Code. It writes a status file for each running session in `~/.claude/sessions/`,
   and that's where the list comes from.
 
 ## Install
 
-With [TPM](https://github.com/tmux-plugins/tpm):
+With [TPM](https://github.com/tmux-plugins/tpm), add the plugin next to your other
+`@plugin` lines, then press `prefix I` to install it:
 
 ```tmux
 set -g @plugin 'ferrants/tmux-ai-navigator'
@@ -40,21 +41,38 @@ git clone https://github.com/ferrants/tmux-ai-navigator ~/.tmux/plugins/tmux-ai-
 run-shell ~/.tmux/plugins/tmux-ai-navigator/tmux-ai-navigator.tmux
 ```
 
-Then reload the config with `tmux source ~/.tmux.conf`.
+Then reload the config with `tmux source ~/.tmux.conf`. The paths here assume TPM's default
+plugin folder; if you've set `TMUX_PLUGIN_MANAGER_PATH` (e.g. `~/.config/tmux/plugins/`),
+use that instead.
 
-Options (set them before the plugin loads):
+Updating: `prefix U` with TPM, or `git pull` and reload the config. Reloading also restarts
+the notification watcher on the new version.
+
+### Options
+
+Set options anywhere above the line that loads plugins: `run '~/.tmux/plugins/tpm/tpm'`
+with TPM, or the `run-shell` line for a manual install.
 
 ```tmux
 set -g @ainav-key 'a'                # prefix key that opens/closes the picker (default a)
 set -g @ainav-later-key 'u'          # prefix key: flag the current pane's session for later (default u)
+set -g @ainav-popup 'on'             # tmux 3.2+: popup (on) or temporary window (off)
+set -g @ainav-popup-width '90%'
+set -g @ainav-popup-height '85%'
 set -g @ainav-extras 'command'       # extras command, see below (default none)
 set -g @ainav-extras-interval '5'    # seconds between extras runs (default 5)
 set -g @ainav-notify 'tmux'          # notifications, see below (default tmux)
 ```
 
+The plugin doesn't take a key that's already bound. Many configs use `prefix a` for
+`send-prefix`, for example, and URL plugins often use `prefix u`. If a default key is taken,
+the plugin skips it and says so in the status line; set `@ainav-key` or `@ainav-later-key`
+to choose a key. A key you set explicitly is always bound.
+
 ## Use
 
-`prefix a` opens the picker. Pressing it again inside the picker closes it.
+`prefix a` opens the picker. `esc` closes it (in the window version, so does pressing
+`prefix a` again).
 
 Each row shows the tmux window name, Claude's title for the session, the project (the tmux
 session name without a leading number, e.g. `2api` → `api`), and how long it has been in its
@@ -224,7 +242,6 @@ bin/tmux-ai-nav demo                    # the picker on made-up sessions
 
 ## Roadmap
 
-- A popup on tmux 3.2+.
 - Clicking a desktop notification to jump to its pane.
 - Other agents (Codex, …).
 - A preview of the end of each session's pane, and a status-line count.

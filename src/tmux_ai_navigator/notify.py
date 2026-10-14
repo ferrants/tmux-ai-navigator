@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 
+from .tmux import SEP
+
 
 POLL_S = 0.5
 OPTIONS_S = 5.0
@@ -80,10 +82,10 @@ def options(tmux):
     opts = dict(DEFAULTS)
     names = list(DEFAULTS)
     try:
-        out = tmux.run("display", "-p", "\x1f".join(f"#{{@ainav-{n}}}" for n in names), check=False)
+        out = tmux.run("display", "-p", SEP.join(f"#{{@ainav-{n}}}" for n in names), check=False)
     except Exception:
         return opts
-    values = out.rstrip("\n").split("\x1f")
+    values = out.rstrip("\n").split(SEP)
     if len(values) == len(names):
         for n, v in zip(names, values):
             if v.strip():
@@ -211,11 +213,13 @@ class Watcher:
         due = {key: kind for key, (kind, at) in self.pending.items() if at <= now}
         if not due:
             return []
+        # if tmux fails here, the events stay pending and are retried on the next poll
+        found = self.disc.agents(record_seen=False, strict=True)
         for key in due:
             del self.pending[key]
         sent = []
         show_visible = self.opts.get("notify-visible") == "on"
-        for a in self.disc.agents(record_seen=False):
+        for a in found:
             kind = due.get((a.pid, a.session_id))
             if kind and still(kind, a.status) and (show_visible or not a.on_screen):
                 self.deliver(self.disc.tmux, a, kind, self.opts)

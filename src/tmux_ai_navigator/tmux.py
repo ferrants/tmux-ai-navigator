@@ -4,7 +4,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 
-SEP = "\x1f"
+# printable on purpose: tmux 3.2+ escapes control characters in format output ("\037")
+SEP = ":~ainav~:"
 PANE_FIELDS = ["pane_id", "pane_pid", "session_id", "session_name", "window_id", "window_index",
                "window_name", "pane_active", "window_active", "pane_current_path", "pane_title",
                "session_attached"]
@@ -57,12 +58,15 @@ class Tmux:
         m = re.search(r"(\d+)\.(\d+)", self.run("-V", check=False))
         return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
-    def panes(self):
-        """Every pane in every session. A pane in a linked window appears once per session."""
+    def panes(self, strict=False):
+        """Every pane in every session. A pane in a linked window appears once per session.
+        If tmux fails: [] (the picker shows what it can), or TmuxError when strict."""
         fmt = SEP.join("#{%s}" % f for f in PANE_FIELDS)
         try:
             out = self.run("list-panes", "-a", "-F", fmt)
         except TmuxError:
+            if strict:
+                raise
             return []
         panes = []
         for line in out.splitlines():

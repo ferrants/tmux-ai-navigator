@@ -41,9 +41,11 @@ class SessionFiles:
                 try:
                     with open(path) as f:
                         data = json.load(f)
+                    self._cache[path] = (mtime, data)
                 except (OSError, ValueError):
-                    data = None
-                self._cache[path] = (mtime, data)
+                    # caught mid-write (or broken): keep the last good copy and retry next time,
+                    # so a session doesn't briefly vanish and lose its observed state
+                    data = hit[1] if hit else None
             if isinstance(data, dict):
                 out.append(data)
         for path in list(self._cache):

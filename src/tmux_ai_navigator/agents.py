@@ -190,6 +190,16 @@ def pick_title(a, titles=None):
     return t or custom or a.name
 
 
+def server_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
 def text(v):
     """A session-file field as a string; anything else (a format change) counts as missing."""
     return v if isinstance(v, str) else ""
@@ -211,15 +221,16 @@ class Discovery:
             self._server = self.tmux.server_pid()
         return self._server
 
-    def agents(self, current_session=None, include_untracked=False, record_seen=True):
+    def agents(self, current_session=None, include_untracked=False, record_seen=True, strict=False):
         table = procmod.snapshot(self.proc)
         entries = claude.live(self.files.read(), table, self.domain)
-        panes = self.tmux.panes()
+        panes = self.tmux.panes(strict=True) if strict else self.tmux.panes()
         visible = {p.pane_id for p in panes if p.on_screen}
         if record_seen:
             st = self.update_seen(visible)
         else:
             st = self.state.read()
+        view = state.server_view(st, self.server())
         mapping = map_to_panes([d["pid"] for d in entries], panes, table, current_session)
         out = []
         for d in entries:
@@ -242,7 +253,7 @@ class Discovery:
             elif not include_untracked:
                 continue
             a.branch = git_branch(a.cwd)
-            a.done = state.is_done(a, st, visible)
+            a.done = state.is_done(a, view, visible)
             a.later = state.later_active(a, st)
             out.append(a)
         info = self.extras.get(out)
@@ -255,10 +266,11 @@ class Discovery:
     def update_seen(self, visible, extra=(), at=None):
         """Record panes on screen now (and ones that just left the screen) as seen at `at`."""
         st = self.state.read()
-        if st.get("server") == self.server() and set(st.get("visible", [])) == visible and not extra:
+        known = st["servers"].get(str(self.server()))
+        if known and set(known.get("visible", [])) == visible and not extra:
             return st
         with self.state.update() as st:
-            state.mark_visible(st, self.server(), visible, now=at, extra_seen=extra)
+            state.mark_visible(st, self.server(), visible, now=at, extra_seen=extra, alive=server_alive)
         return st
 
     def toggle_later(self, agent):

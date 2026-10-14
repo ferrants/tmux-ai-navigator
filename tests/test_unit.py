@@ -108,6 +108,14 @@ class LiveTests(unittest.TestCase):
             f.write("{not json")
         sf = claude.SessionFiles(d)
         self.assertEqual(sf.read(), [{"pid": 1}])
+        with open(os.path.join(d, "1.json"), "w") as f:
+            f.write('{"pid": 1, "sta')  # mid-write: the last good copy stands in
+        os.utime(os.path.join(d, "1.json"), ns=(1, 1))
+        self.assertEqual(sf.read(), [{"pid": 1}])
+        with open(os.path.join(d, "1.json"), "w") as f:
+            json.dump({"pid": 1, "status": "idle"}, f)
+        os.utime(os.path.join(d, "1.json"), ns=(2, 2))
+        self.assertEqual(sf.read(), [{"pid": 1, "status": "idle"}])
         os.remove(os.path.join(d, "1.json"))
         self.assertEqual(sf.read(), [])
 
@@ -322,29 +330,47 @@ class TitleTests(unittest.TestCase):
 
 class StateTests(unittest.TestCase):
     def test_done_lifecycle(self):
-        d = {"seen": {}, "later": {}, "visible": [], "created": 100.0}
+        d = {"servers": {}, "later": {}}
+        state.mark_visible(d, "srv", set(), now=100.0)          # first use
+        v = state.server_view(d, "srv")
         a = ag("x", since=200.0, started=50.0)
-        self.assertTrue(state.is_done(a, d, set()))            # finished after first use, never looked
-        self.assertFalse(state.is_done(a, d, {"%x"}))          # on screen right now
+        self.assertTrue(state.is_done(a, v, set()))            # finished after first use, never looked
+        self.assertFalse(state.is_done(a, v, {"%x"}))          # on screen right now
         state.mark_visible(d, "srv", {"%x"}, now=300.0)
         state.mark_visible(d, "srv", set(), now=310.0)          # left the pane: seen at 310
-        self.assertEqual(d["seen"]["%x"], 310.0)
-        self.assertFalse(state.is_done(a, d, set()))
+        self.assertEqual(v["seen"]["%x"], 310.0)
+        self.assertFalse(state.is_done(a, v, set()))
         a.since = 400.0                                         # finished again later
-        self.assertTrue(state.is_done(a, d, set()))
+        self.assertTrue(state.is_done(a, v, set()))
 
     def test_not_done_cases(self):
-        d = {"seen": {}, "later": {}, "visible": [], "created": 100.0}
-        self.assertFalse(state.is_done(ag("old", since=90.0, started=10.0), d, set()))   # before first use
-        self.assertFalse(state.is_done(ag("fresh", since=205.0, started=200.0), d, set()))  # just started
-        self.assertFalse(state.is_done(ag("busy", "busy", since=300.0, started=10.0), d, set()))
+        v = {"seen": {}, "visible": [], "created": 100.0}
+        self.assertFalse(state.is_done(ag("old", since=90.0, started=10.0), v, set()))   # before first use
+        self.assertFalse(state.is_done(ag("fresh", since=205.0, started=200.0), v, set()))  # just started
+        self.assertFalse(state.is_done(ag("busy", "busy", since=300.0, started=10.0), v, set()))
+        unknown = state.server_view({"servers": {}}, "nope")    # untracked server: nothing is done yet
+        self.assertFalse(state.is_done(ag("x", since=200.0, started=10.0), unknown, set()))
 
-    def test_new_server_resets_seen_and_seen_is_monotonic(self):
-        d = {"seen": {"%1": 50.0}, "later": {}, "visible": [], "server": "old"}
-        state.mark_visible(d, "new", {"%2"}, now=100.0)
-        self.assertEqual(d["seen"], {"%2": 100.0})
-        state.mark_visible(d, "new", {"%2"}, now=90.0)          # an older hook finishing late
-        self.assertEqual(d["seen"]["%2"], 100.0)
+    def test_servers_are_separate_and_seen_is_monotonic(self):
+        d = {"servers": {}, "later": {}}
+        state.mark_visible(d, "1", {"%1"}, now=50.0)
+        state.mark_visible(d, "2", {"%2"}, now=100.0, alive=lambda s: True)
+        self.assertEqual(state.server_view(d, "1")["seen"], {"%1": 50.0})   # not wiped by server 2
+        self.assertEqual(state.server_view(d, "2")["seen"], {"%2": 100.0})
+        state.mark_visible(d, "2", {"%2"}, now=90.0)          # an older hook finishing late
+        self.assertEqual(state.server_view(d, "2")["seen"]["%2"], 100.0)
+        state.mark_visible(d, "2", set(), now=120.0, alive=lambda s: False)  # server 1 is gone
+        self.assertEqual(list(d["servers"]), ["2"])
+
+    def test_old_single_server_layout_is_migrated(self):
+        st = state.State(tempfile.mkdtemp())
+        os.makedirs(st.dir, exist_ok=True)
+        with open(st.path, "w") as f:
+            json.dump({"seen": {"%1": 5.0}, "visible": ["%1"], "server": "77", "created": 1.0, "later": {"s": 2.0}}, f)
+        d = st.read()
+        self.assertEqual(d["servers"], {"77": {"seen": {"%1": 5.0}, "visible": ["%1"], "created": 1.0}})
+        self.assertEqual(d["later"], {"s": 2.0})
+        self.assertNotIn("seen", d)
 
     def test_later_clears_after_next_status_change(self):
         d = {"seen": {}, "later": {}, "visible": []}
@@ -363,7 +389,7 @@ class StateTests(unittest.TestCase):
         with st.update() as d:
             state.toggle_later(d, "s1", now=5.0)
         self.assertEqual(st.read()["later"], {"s1": 5.0})
-        self.assertIn("created", st.read())
+        self.assertEqual(st.read()["servers"], {})
 
 
 class TranscriptTests(unittest.TestCase):
@@ -447,7 +473,7 @@ class NotifyTests(unittest.TestCase):
             tmux = None
             files = Files()
 
-            def agents(self, record_seen=True):
+            def agents(self, record_seen=True, strict=False):
                 return [ag("a"), ag("b", on_screen=True)]
 
         sent, now = [], [100.0]
@@ -482,7 +508,7 @@ class NotifyTests(unittest.TestCase):
             tmux = None
             files = Files()
 
-            def agents(self, record_seen=True):
+            def agents(self, record_seen=True, strict=False):
                 return [ag("a")]
 
         sent, now = [], [100.0]
@@ -513,3 +539,34 @@ class NotifyTests(unittest.TestCase):
             lock.close()
         finally:
             notify.os.kill = real
+
+    def test_due_event_survives_a_tmux_failure(self):
+        files = [{"pid": ag("a").pid, "sessionId": "a", "status": "busy"}]
+        fail = [True]
+
+        class Files:
+            def read(self):
+                return files
+
+        class Disc:
+            tmux = None
+            files = Files()
+
+            def agents(self, record_seen=True, strict=False):
+                if fail[0]:
+                    raise RuntimeError("tmux timed out")
+                return [ag("a")]
+
+        sent, now = [], [100.0]
+        w = notify.Watcher(Disc(), deliver_fn=lambda t, a, k, o: sent.append(k), clock=lambda: now[0])
+        w._opts_at = 1e18
+        w.step()
+        files[0]["status"] = "idle"
+        w.step()
+        now[0] += 2
+        with self.assertRaises(RuntimeError):
+            w.step()
+        fail[0] = False
+        now[0] += 0.5
+        w.step()
+        self.assertEqual(sent, ["done"])

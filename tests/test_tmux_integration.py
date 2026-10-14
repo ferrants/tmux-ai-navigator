@@ -5,6 +5,7 @@ checks discovery, the picker window toggle, and switching an attached client to 
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,8 @@ class TmuxIntegration(unittest.TestCase):
                         "-x", "120", "-y", "40"], check=True, env=env)
         subprocess.run(["tmux", "-L", SOCK, "new-session", "-d", "-s", "work", "-n", "agentwin"],
                        check=True, env=env)
+        # the plugin starts a notification watcher unless told not to
+        subprocess.run(["tmux", "-L", SOCK, "set", "-g", "@ainav-notify", "off"], check=True, env=env)
         # the "agent": a child of the pane's shell, like claude under bash
         cls.t.run("send-keys", "-t", "work:agentwin", "exec sleep 600 & wait", "Enter")
         cls.pane = cls.t.run("display", "-p", "-t", "work:agentwin", "#{pane_id}").strip()
@@ -126,8 +129,7 @@ class TmuxIntegration(unittest.TestCase):
 
     def test_done_until_seen(self):
         with self.state().update() as d:   # first use an hour ago: the agent finished after that
-            d["created"] = time.time() - 3600
-            d["seen"], d["visible"], d.pop("server", None)
+            d["servers"] = {self.t.server_pid(): {"seen": {}, "visible": [], "created": time.time() - 3600}}
         self.assertTrue(self.agent()["done"])
         client = self.attach("work")
         try:
@@ -152,15 +154,82 @@ class TmuxIntegration(unittest.TestCase):
         self.assertIn("client-detached[87]", hooks)
         subprocess.run(["bash", os.path.join(HERE, "..", "tmux-ai-navigator.tmux")], env=env, check=True)
         self.assertEqual(self.t.run("show-hooks", "-g").count("after-select-window["), 1)  # no duplicates
-        before = self.state().read()["seen"].get(self.pane, 0)
+        def seen():
+            return self.state().read()["servers"].get(self.t.server_pid(), {}).get("seen", {}).get(self.pane, 0)
+        before = seen()
         client = self.attach("work")
         try:
             wait_for(lambda: self.t.clients())
             self.t.run("new-window", "-t", "work:")
             self.t.run("select-window", "-t", "work:agentwin")
-            got = wait_for(lambda: self.state().read()["seen"].get(self.pane, 0) > before, timeout=8)
+            got = wait_for(lambda: seen() > before, timeout=8)
             self.assertTrue(got, "hook did not record the pane as seen")
         finally:
+            client.terminate()
+            client.wait(timeout=5)
+            client.stdin.close()
+
+    def run_plugin(self):
+        sock = self.t.run("display", "-p", "#{socket_path}").strip()
+        env = dict(self.env, TMUX=f"{sock},0,0")
+        subprocess.run(["bash", os.path.join(HERE, "..", "tmux-ai-navigator.tmux")], env=env, check=True)
+
+    def prefix_binding(self, key):
+        for line in self.t.run("list-keys", "-T", "prefix").splitlines():
+            parts = line.split(None, 4)
+            if len(parts) >= 4 and parts[3] == key:
+                return line
+        return ""
+
+    def test_plugin_leaves_existing_bindings_alone(self):
+        try:
+            self.t.run("bind-key", "a", "send-prefix")
+            self.run_plugin()
+            self.assertIn("send-prefix", self.prefix_binding("a"))
+            self.assertIn("tmux-ai-nav", self.prefix_binding("u"))
+            self.run_plugin()  # our own binding from a previous load is fine to replace
+            self.assertIn("tmux-ai-nav", self.prefix_binding("u"))
+            self.t.run("set", "-g", "@ainav-key", "a")  # chosen explicitly: take it
+            self.run_plugin()
+            self.assertIn("tmux-ai-nav", self.prefix_binding("a"))
+        finally:
+            self.t.run("set", "-gu", "@ainav-key", check=False)
+            self.t.run("unbind-key", "a", check=False)
+            self.t.run("unbind-key", "u", check=False)
+
+    def test_popup_opens_and_jumps(self):
+        version = self.t.run("display", "-p", "#{version}").strip()
+        major_minor = re.match(r"(\d+)\.(\d+)", version)
+        if major_minor and tuple(map(int, major_minor.groups())) < (3, 2):
+            self.skipTest(f"tmux {version} has no display-popup")
+        # the popup gets the server's environment: point it at the test's session files
+        config = tempfile.mkdtemp()
+        os.symlink(self.sessions, os.path.join(config, "sessions"))
+        self.t.run("set-environment", "-g", "CLAUDE_CONFIG_DIR", config)
+        client = self.attach("home")
+        try:
+            self.run_plugin()
+            self.assertIn("--popup", self.prefix_binding("a"))
+            tty = wait_for(lambda: (self.t.clients() or [None])[0])
+            self.assertTrue(tty, "client did not attach")
+
+            def ui_running():
+                out = subprocess.run(["pgrep", "-f", f"tmux_ai_navigator.cli.*{SOCK} ui --here"], capture_output=True, text=True).stdout
+                return out.split()
+            client.stdin.write(b"\x02a")  # prefix (C-b) then a
+            client.stdin.flush()
+            self.assertTrue(wait_for(ui_running), "picker did not open in a popup")
+            time.sleep(0.8)
+            client.stdin.write(b"\r")
+            client.stdin.flush()
+            got = wait_for(lambda: self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}").strip()
+                           == f"work {self.pane}")
+            self.assertTrue(got, self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}"))
+            self.assertTrue(wait_for(lambda: not ui_running()), "popup did not close after the jump")
+        finally:
+            self.t.run("set-environment", "-gu", "CLAUDE_CONFIG_DIR", check=False)
+            self.t.run("unbind-key", "a", check=False)
+            self.t.run("unbind-key", "u", check=False)
             client.terminate()
             client.wait(timeout=5)
             client.stdin.close()

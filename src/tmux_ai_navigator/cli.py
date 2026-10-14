@@ -21,7 +21,7 @@ from dataclasses import asdict
 from .agents import Discovery, fmt_age, sort_agents
 from .extras import Extras
 from .state import State
-from .tmux import Tmux, TmuxError, from_env
+from .tmux import SEP, Tmux, TmuxError, from_env
 
 WINDOW_FLAG = "@ainav_window"
 ORIGIN_OPT = "@ainav_origin"
@@ -79,17 +79,43 @@ def self_command():
             f"import sys; sys.path.insert(0, {src!r}); from tmux_ai_navigator.cli import main; sys.exit(main())"]
 
 
+def ui_command(args, session_id, pane):
+    cmd = self_command() + server_flags(args)
+    if args.sessions_dir:
+        cmd += ["--sessions-dir", args.sessions_dir]
+    if args.state_dir:
+        cmd += ["--state-dir", args.state_dir]
+    if args.extras is not None:
+        cmd += ["--extras", args.extras]
+    cmd += ["ui", "--here", pane, "--session", session_id]
+    if args.client:
+        cmd += ["--client", args.client]
+    return cmd
+
+
 def cmd_open(args):
-    """Toggle the picker window in the client's session."""
+    """Open the picker for the client that pressed the key: in a popup (tmux 3.2+, --popup),
+    or in a temporary window, which pressing the key again inside closes."""
     tmux = make_tmux(args)
     pane = args.pane
-    fmt = f"#{{session_id}}\x1f#{{window_id}}\x1f#{{{WINDOW_FLAG}}}\x1f#{{pane_id}}"
+    fmt = SEP.join(["#{session_id}", "#{window_id}", f"#{{{WINDOW_FLAG}}}", "#{pane_id}"])
     # Prefer the client's view: a pane in a window linked into several sessions doesn't say
     # which session the user is looking at.
     info = tmux.run("display", "-p", "-c", args.client, fmt, check=False).strip() if args.client else ""
     if not info:
         info = tmux.run("display", "-p", "-t", pane, fmt).strip()
-    session_id, window_id, is_picker, pane = (info.split("\x1f") + ["", "", "", pane])[:4]
+    session_id, window_id, is_picker, pane = (info.split(SEP) + ["", "", "", pane])[:4]
+    if args.popup:
+        # display-popup doesn't expand formats in its command, hence this detour through
+        # run-shell and us; it returns when the popup closes, so don't wait for it
+        width, _, height = args.popup.partition("x")
+        popup = tmux.base + ["display-popup", "-E", "-w", width or "90%", "-h", height or "85%"]
+        if args.client:
+            popup += ["-c", args.client]
+        subprocess.Popen(popup + [" ".join(shlex.quote(c) for c in ui_command(args, session_id, pane))],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return 0
     if is_picker == "1":
         # pressed inside the picker: close it and go back
         origin = tmux.run("show", "-wqv", "-t", window_id, ORIGIN_OPT, check=False).strip()
@@ -102,16 +128,7 @@ def cmd_open(args):
         wid, _, flag = line.partition(" ")
         if flag == "1":
             tmux.run("kill-window", "-t", wid, check=False)
-    cmd = self_command() + server_flags(args)
-    if args.sessions_dir:
-        cmd += ["--sessions-dir", args.sessions_dir]
-    if args.state_dir:
-        cmd += ["--state-dir", args.state_dir]
-    if args.extras is not None:
-        cmd += ["--extras", args.extras]
-    cmd += ["ui", "--origin", window_id, "--here", pane, "--session", session_id]
-    if args.client:
-        cmd += ["--client", args.client]
+    cmd = ui_command(args, session_id, pane) + ["--origin", window_id]
     new = tmux.run("new-window", "-t", f"{session_id}:", "-n", "agents", "-P", "-F", "#{window_id}",
                    " ".join(shlex.quote(c) for c in cmd)).strip()
     tmux.run("set", "-w", "-t", new, WINDOW_FLAG, "1", check=False)
@@ -243,6 +260,7 @@ def main(argv=None):
     p = sub.add_parser("open", help="toggle the picker window (for key bindings)")
     p.add_argument("--client", help="#{client_tty} of the client to switch")
     p.add_argument("--pane", required=True, help="#{pane_id} the key was pressed in")
+    p.add_argument("--popup", metavar="WxH", help="open in a popup of this size (tmux 3.2+), e.g. 90%%x85%%")
     p.set_defaults(func=cmd_open)
 
     p = sub.add_parser("ui", help="run the picker in this terminal")
