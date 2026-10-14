@@ -176,16 +176,20 @@ class TmuxIntegration(unittest.TestCase):
 
     def prefix_binding(self, key):
         for line in self.t.run("list-keys", "-T", "prefix").splitlines():
-            parts = line.split(None, 4)
-            if len(parts) >= 4 and parts[3] == key:
+            parts = line.split()
+            if "prefix" in parts[:-1] and parts[parts.index("prefix") + 1] == key:
                 return line
         return ""
 
     def test_plugin_leaves_existing_bindings_alone(self):
         try:
             self.t.run("bind-key", "a", "send-prefix")
+            self.t.run("bind-key", "-r", "u", "resize-pane", "-U")  # list-keys shows "-r" before the key
             self.run_plugin()
             self.assertIn("send-prefix", self.prefix_binding("a"))
+            self.assertIn("resize-pane", self.prefix_binding("u"))
+            self.t.run("unbind-key", "u")
+            self.run_plugin()  # now free: taken
             self.assertIn("tmux-ai-nav", self.prefix_binding("u"))
             self.run_plugin()  # our own binding from a previous load is fine to replace
             self.assertIn("tmux-ai-nav", self.prefix_binding("u"))

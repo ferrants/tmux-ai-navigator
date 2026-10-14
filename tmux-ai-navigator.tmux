@@ -33,7 +33,9 @@ bind_prefix() {
   local chosen key existing
   chosen="$(tmux show -gqv "$option")"
   key="${chosen:-$default}"
-  existing="$(tmux list-keys -T prefix 2>/dev/null | awk -v k="$key" '$1 == "bind-key" && $4 == k' | head -1)"
+  # the key follows "-T prefix", after optional flags like -r
+  existing="$(tmux list-keys -T prefix 2>/dev/null |
+    awk -v k="$key" '{ for (i = 2; i < NF; i++) if ($i == "prefix") { if ($(i + 1) == k) print; break } }' | head -1)"
   if [ -z "$chosen" ] && [ -n "$existing" ] && ! printf '%s' "$existing" | grep -q 'tmux-ai-nav'; then
     tmux display-message "tmux-ai-navigator: prefix $key is already bound; set $option to pick a key"
     return
