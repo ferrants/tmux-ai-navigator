@@ -46,12 +46,14 @@ def home():
 def positional(argv):
     """The positional arguments (subcommand, prompt, ids), skipping flags and their values.
     A flag that ends the TUI ("--help") is returned as if it were a subcommand."""
-    out, skip = [], False
+    out, skip, rest = [], False, False
     for tok in argv[1:]:
         if skip:
             skip = False
+        elif rest:
+            out.append(tok)
         elif tok == "--":
-            break
+            rest = True  # everything after is positional
         elif tok.startswith("-"):
             if tok in NOT_TUI:
                 out.append(tok)
