@@ -56,7 +56,7 @@ def discovery(args, tmux=None, with_extras=False):
 
 def tmux_option(tmux, name):
     try:
-        return tmux.run("show", "-gqv", name, check=False).strip()
+        return tmux.options([name])[name].strip()
     except Exception:  # no server: options simply aren't set
         return ""
 
@@ -101,7 +101,7 @@ def cmd_open(args):
     fmt = SEP.join(["#{session_id}", "#{window_id}", f"#{{{WINDOW_FLAG}}}", "#{pane_id}"])
     # Prefer the client's view: a pane in a window linked into several sessions doesn't say
     # which session the user is looking at.
-    info = tmux.run("display", "-p", "-c", args.client, fmt, check=False).strip() if args.client else ""
+    info = tmux.client_format(args.client, fmt).strip() if args.client else ""
     if not info:
         info = tmux.run("display", "-p", "-t", pane, fmt).strip()
     session_id, window_id, is_picker, pane = (info.split(SEP) + ["", "", "", pane])[:4]

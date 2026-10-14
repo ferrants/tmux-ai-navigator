@@ -22,7 +22,6 @@ import subprocess
 import sys
 import time
 
-from .tmux import SEP
 
 
 POLL_S = 0.5
@@ -80,16 +79,14 @@ def options(tmux):
     """@ainav-notify* options merged over the defaults, exact values in one tmux call
     (`show -g` would quote and escape them)."""
     opts = dict(DEFAULTS)
-    names = list(DEFAULTS)
     try:
-        out = tmux.run("display", "-p", SEP.join(f"#{{@ainav-{n}}}" for n in names), check=False)
+        values = tmux.options([f"@ainav-{n}" for n in DEFAULTS])
     except Exception:
         return opts
-    values = out.rstrip("\n").split(SEP)
-    if len(values) == len(names):
-        for n, v in zip(names, values):
-            if v.strip():
-                opts[n] = v.strip()
+    for n in DEFAULTS:
+        v = values.get(f"@ainav-{n}", "").strip()
+        if v:
+            opts[n] = v
     return opts
 
 

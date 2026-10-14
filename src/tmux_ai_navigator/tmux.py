@@ -80,6 +80,35 @@ class Tmux:
                 continue
         return panes
 
+    def server_version(self):
+        if not hasattr(self, "_server_version"):
+            self._server_version = self.run("display", "-p", "#{version}", check=False).strip()
+        return self._server_version
+
+    def options(self, names):
+        """{name: value} of global options, in one call; "" when unset.
+
+        tmux 3.4 prints "$" in option values as "\\$" (3.3 and 3.5 don't), which would break
+        shell commands kept in options, so that's undone for 3.4.
+        """
+        out = self.run("display", "-p", SEP.join("#{%s}" % n for n in names), check=False)
+        values = out.rstrip("\n").split(SEP)
+        if len(values) != len(names):
+            return {n: "" for n in names}
+        if self.server_version().startswith("3.4"):
+            values = [v.replace("\\$", "$") for v in values]
+        return dict(zip(names, values))
+
+    def client_format(self, tty, fmt):
+        """fmt expanded for one client (its session, window and pane), or "" if it's gone.
+        list-clients, because `display -p -c` is rejected by tmux 3.2."""
+        out = self.run("list-clients", "-F", "#{client_tty}" + SEP + fmt, check=False)
+        for line in out.splitlines():
+            name, _, rest = line.partition(SEP)
+            if name == tty:
+                return rest
+        return ""
+
     def server_pid(self):
         return self.run("display", "-p", "#{pid}", check=False).strip()
 

@@ -226,9 +226,9 @@ class TmuxIntegration(unittest.TestCase):
             time.sleep(0.8)
             client.stdin.write(b"\r")
             client.stdin.flush()
-            got = wait_for(lambda: self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}").strip()
+            got = wait_for(lambda: self.t.client_format(tty, "#{session_name} #{pane_id}").strip()
                            == f"work {self.pane}")
-            self.assertTrue(got, self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}"))
+            self.assertTrue(got, self.t.client_format(tty, "#{session_name} #{pane_id}"))
             self.assertTrue(wait_for(lambda: not ui_running()), "popup did not close after the jump")
         finally:
             self.t.run("set-environment", "-gu", "CLAUDE_CONFIG_DIR", check=False)
@@ -331,9 +331,9 @@ class TmuxIntegration(unittest.TestCase):
             self.t.run("new-window", "-t", "work:")
             sid, wid = self.t.run("display", "-p", "-t", self.pane, "#{session_id} #{window_id}").split()
             self.t.jump(tty, sid, wid, self.pane)
-            now = wait_for(lambda: self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}").strip()
+            now = wait_for(lambda: self.t.client_format(tty, "#{session_name} #{pane_id}").strip()
                            == f"work {self.pane}")
-            self.assertTrue(now, self.t.run("display", "-p", "-c", tty, "#{session_name} #{pane_id}"))
+            self.assertTrue(now, self.t.client_format(tty, "#{session_name} #{pane_id}"))
         finally:
             client.terminate()
             client.wait(timeout=5)
