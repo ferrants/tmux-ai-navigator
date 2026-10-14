@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tmux-ai-navigator"
+version = "0.1.0"
+description = "Find and jump to AI coding agent sessions (Claude Code) running in tmux"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = []
+authors = [{ name = "Matt Ferrante" }]
+keywords = ["tmux", "claude", "claude-code", "ai", "agents", "terminal"]
+classifiers = [
+    "Environment :: Console :: Curses",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/ferrants/tmux-ai-navigator"
+
+[project.scripts]
+tmux-ai-nav = "tmux_ai_navigator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
