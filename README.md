@@ -118,15 +118,20 @@ state a moment later, so quick back-and-forth doesn't spam you.
 
 ```tmux
 set -g @ainav-notify 'tmux,system'   # any of: tmux, system, terminal, bell; or off
-set -g @ainav-notify-sound 'on'      # on (system sounds), off, or a sound file
+set -g @ainav-notify-sound 'soft'    # soft (a quiet chime), system, off, or a sound file
+set -g @ainav-notify-volume '60'     # 0-100
 ```
+
+`tmux-ai-nav watch --test done` (or `waiting`) sends a sample notification with your current
+settings, so you can try sounds and volumes.
 
 | option | default | |
 |---|---|---|
 | `@ainav-notify` | `tmux` | `tmux`: a message in the status line. `system`: a desktop notification (`notify-send` on Linux; `terminal-notifier` or `osascript` on macOS). `terminal`: asks your terminal for a desktop notification (OSC 777; works over SSH in terminals that support it, such as kitty, WezTerm, foot and Ghostty). `bell`: rings the terminal bell. `off`: no watcher. |
 | `@ainav-notify-on` | `done,waiting` | which events to notify about |
-| `@ainav-notify-sound` | `off` | `on` plays a system sound (`paplay`/`pw-play`/`aplay` on Linux, `afplay` on macOS) |
-| `@ainav-notify-sound-done`, `@ainav-notify-sound-waiting` | | a sound file per event |
+| `@ainav-notify-sound` | `off` | `soft` (or `on`): a short, quiet two-note chime, generated on first use. `system`: your desktop's sound theme (freedesktop `complete`/`message-new-instant` on Linux, Glass/Ping on macOS). Or the path to a sound file. Played with `afplay`, `paplay`, `pw-play`, `ffplay` or `aplay`, whichever is found first. |
+| `@ainav-notify-sound-done`, `@ainav-notify-sound-waiting` | | per event: `soft`, `system` or a file |
+| `@ainav-notify-volume` | `100` | 0-100 (`aplay` can't change the volume of a file; the soft chime is made at this volume) |
 | `@ainav-notify-delay` | `1` | seconds the new state must hold |
 | `@ainav-notify-visible` | `off` | `on` also notifies for panes that are on screen |
 | `@ainav-notify-command` | | a command to run as well, with `AINAV_EVENT` (`done` or `waiting`), `AINAV_TITLE`, `AINAV_PROJECT`, `AINAV_WINDOW`, `AINAV_PANE`, `AINAV_TMUX_SESSION`, `AINAV_SESSION_ID`, `AINAV_CWD` and `AINAV_MESSAGE` set |

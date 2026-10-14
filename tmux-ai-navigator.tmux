@@ -9,6 +9,7 @@
 #   set -g @ainav-extras 'cmd'     # extras command (badge/title/preview lines per session; see README)
 #   set -g @ainav-extras-interval 5
 #   set -g @ainav-notify 'tmux,system'  # notifications: tmux, system, terminal, bell, or off
+#   set -g @ainav-notify-sound 'soft'   # soft, system, off, or a sound file; @ainav-notify-volume 0-100
 # Manual install: run-shell /path/to/tmux-ai-navigator/tmux-ai-navigator.tmux
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$DIR/bin/tmux-ai-nav"

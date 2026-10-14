@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Notification sounds: `@ainav-notify-sound 'soft'` (now what `on` means) plays a short,
+  quiet built-in chime instead of the desktop's sound theme; `system` keeps the old sounds.
+  New `@ainav-notify-volume` (0-100).
+- `tmux-ai-nav watch --test done|waiting` sends a sample notification with your settings.
+
 ## 0.1.0
 
 First release.

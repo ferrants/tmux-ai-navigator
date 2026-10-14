@@ -1,10 +1,12 @@
 import json
 import os
 import socket
+import struct
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -454,10 +456,37 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(notify.events(prev, cur), [((6, "a"), "done")])
 
     def test_sound_choice(self):
-        self.assertEqual(notify.sound_file("done", {"notify-sound": "off"}), "")
-        self.assertEqual(notify.sound_file("done", {"notify-sound": "/x.mp3"}), "/x.mp3")
-        self.assertEqual(notify.sound_file("done", {"notify-sound": "on", "notify-sound-done": "/d.oga"}), "/d.oga")
-        self.assertTrue(notify.sound_file("waiting", {"notify-sound": "on"}))
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"XDG_CACHE_HOME": d}):
+            self.assertEqual(notify.sound_file("done", {"notify-sound": "off"}), "")
+            self.assertEqual(notify.sound_file("done", {"notify-sound": "/x.mp3"}), "/x.mp3")
+            self.assertEqual(notify.sound_file("done", {"notify-sound": "on", "notify-sound-done": "/d.oga"}), "/d.oga")
+            self.assertIn("/sounds/", notify.sound_file("waiting", {"notify-sound": "system"}))
+            # per-event setting works even with the main switch off
+            self.assertTrue(notify.sound_file("done", {"notify-sound": "off", "notify-sound-done": "soft"})
+                            .startswith(d))
+            soft = notify.sound_file("waiting", {"notify-sound": "on"})
+            self.assertTrue(soft.startswith(d) and soft.endswith(".wav"))
+            # soft sounds have the volume built in; files get it from the player
+            self.assertEqual(notify.sound("done", {"notify-sound": "soft", "notify-volume": "40"})[1], 100)
+            self.assertEqual(notify.sound("done", {"notify-sound": "/x.mp3", "notify-volume": "40"}), ("/x.mp3", 40))
+            self.assertEqual(notify.volume({"notify-volume": "loud"}), 100)
+            self.assertEqual(notify.volume({"notify-volume": "250"}), 100)
+
+    def test_soft_sound_is_a_quiet_wav(self):
+        import wave
+        with tempfile.TemporaryDirectory() as d:
+            loud, quiet = notify.soft_sound("done", 100, d), notify.soft_sound("done", 30, d)
+            self.assertNotEqual(loud, quiet)
+            self.assertEqual(notify.soft_sound("done", 100, d), loud)  # cached
+            peaks = []
+            for path in (loud, quiet):
+                with wave.open(path) as w:
+                    self.assertEqual((w.getnchannels(), w.getsampwidth()), (1, 2))
+                    self.assertLess(w.getnframes() / w.getframerate(), 1.5)
+                    data = w.readframes(w.getnframes())
+                peaks.append(max(abs(x) for x in struct.unpack(f"<{len(data) // 2}h", data)))
+            self.assertLess(peaks[0], 0.4 * 32767)
+            self.assertLess(peaks[1], peaks[0] * 0.4)
 
     def test_osc_strips_separators(self):
         self.assertEqual(notify.osc_notify("a;b", "c\x1bd"), b"\x1b]777;notify;ab;cd\x1b\\")

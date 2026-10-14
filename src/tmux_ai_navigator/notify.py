@@ -8,20 +8,23 @@ session is still in that state and its pane isn't on screen, then notifies.
 Options, re-read every few seconds (tmux `set -g`):
   @ainav-notify          comma list of: tmux, system, terminal, bell; or off   (default tmux)
   @ainav-notify-on       which events: done, waiting                           (default both)
-  @ainav-notify-sound    on, off, or a sound file for both events              (default off)
-  @ainav-notify-sound-done / @ainav-notify-sound-waiting   per-event sound file
+  @ainav-notify-sound    soft (= on), system, off, or a sound file              (default off)
+  @ainav-notify-sound-done / @ainav-notify-sound-waiting   per-event: soft, system or a file
+  @ainav-notify-volume   0-100                                                  (default 100)
   @ainav-notify-delay    seconds the state must hold first                     (default 1)
   @ainav-notify-visible  on: also notify for panes that are on screen          (default off)
   @ainav-notify-command  run this too, with AINAV_* variables in the environment
 """
 import fcntl
+import math
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
-
+import wave
 
 
 POLL_S = 0.5
@@ -31,8 +34,11 @@ SOUNDS = {
               "waiting": "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"},
     "darwin": {"done": "/System/Library/Sounds/Glass.aiff", "waiting": "/System/Library/Sounds/Ping.aiff"},
 }
+# the built-in "soft" sounds: (frequency Hz, start s) notes of a short, quiet sine chime
+SOFT = {"done": ((392.0, 0.0), (523.25, 0.13)), "waiting": ((440.0, 0.0), (440.0, 0.2))}
 DEFAULTS = {"notify": "tmux", "notify-on": "done,waiting", "notify-sound": "off", "notify-sound-done": "",
-            "notify-sound-waiting": "", "notify-delay": "1", "notify-visible": "off", "notify-command": ""}
+            "notify-sound-waiting": "", "notify-volume": "100", "notify-delay": "1", "notify-visible": "off",
+            "notify-command": ""}
 
 
 # ---- detecting events --------------------------------------------------------------------
@@ -97,23 +103,93 @@ def message(agent, kind):
     return f"✓ done · {where}", agent.title
 
 
+def sound(kind, opts):
+    """(file, player volume) for this event. The soft sounds are made at the chosen volume;
+    other files are turned down by the player."""
+    path = sound_file(kind, opts)
+    return path, 100 if path and path == soft_sound_path(kind, volume(opts)) else volume(opts)
+
+
 def sound_file(kind, opts):
-    path = opts.get(f"notify-sound-{kind}") or ""
-    setting = opts.get("notify-sound", "off")
-    if not path and setting not in ("off", "on", ""):
-        path = setting
-    if not path and setting == "on":
-        path = SOUNDS.get("darwin" if sys.platform == "darwin" else "linux", {}).get(kind, "")
-    return os.path.expanduser(path)
+    """The file to play for this event: a per-event setting wins over @ainav-notify-sound."""
+    value = (opts.get(f"notify-sound-{kind}") or "").strip()
+    if not value:
+        value = (opts.get("notify-sound") or "off").strip()
+        if value == "off":
+            return ""
+    if value in ("on", "soft"):
+        return soft_sound(kind, volume(opts))
+    if value == "system":
+        return SOUNDS.get("darwin" if sys.platform == "darwin" else "linux", {}).get(kind, "")
+    return os.path.expanduser(value)
 
 
-def play(path):
-    if not path or not os.path.exists(path):
+def volume(opts):
+    try:
+        return max(0, min(100, int(float(opts.get("notify-volume") or 100))))
+    except ValueError:
+        return 100
+
+
+def soft_sound(kind, vol=100, directory=None):
+    """A gentle chime, generated once into the cache (no sound files to ship or license)."""
+    notes = SOFT.get(kind)
+    if not notes:
+        return ""
+    path = soft_sound_path(kind, vol, directory)
+    directory = os.path.dirname(path)
+    if os.path.exists(path):
+        return path
+    rate, length = 22050, notes[-1][1] + 0.9
+    frames = bytearray()
+    for i in range(int(rate * length)):
+        t, v = i / rate, 0.0
+        for freq, start in notes:
+            u = t - start
+            if u < 0:
+                continue
+            attack = min(1.0, u / 0.02)  # 20 ms fade in: no click
+            env = attack * math.exp(-u / 0.22)
+            v += env * (math.sin(2 * math.pi * freq * u) + 0.12 * math.sin(4 * math.pi * freq * u))
+        frames += struct.pack("<h", int(max(-1.0, min(1.0, v * 0.22 * vol / 100)) * 32767))
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(frames))
+        os.replace(tmp, path)
+    except OSError:
+        return ""
+    return path
+
+
+def soft_sound_path(kind, vol, directory=None):
+    if directory is None:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+        directory = os.path.join(base, "tmux-ai-navigator", "sounds")
+    return os.path.join(directory, f"soft-{kind}-v1-{vol}.wav")
+
+
+def player(path, vol=100):
+    """The command that plays `path` at `vol` percent, or None."""
+    f = vol / 100
+    for cmd in (["afplay", "-v", f"{f:.2f}"], ["paplay", f"--volume={int(65536 * f)}"],
+                ["pw-play", f"--volume={f:.2f}"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                                                   "-volume", str(vol)], ["aplay", "-q"]):
+        if shutil.which(cmd[0]):
+            return cmd + [path]
+    return None
+
+
+def play(path, vol=100):
+    if not path or not os.path.exists(path) or vol <= 0:
         return
-    for player in (["afplay"], ["paplay"], ["pw-play"], ["aplay", "-q"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"]):
-        if shutil.which(player[0]):
-            spawn(player + [path])
-            return
+    cmd = player(path, vol)
+    if cmd:
+        spawn(cmd)
 
 
 def system_notify(title, body):
@@ -167,7 +243,7 @@ def deliver(tmux, agent, kind, opts):
         write_ttys(ttys, osc_notify(title, body))
     if "bell" in methods:
         write_ttys(ttys, b"\a")
-    play(sound_file(kind, opts))
+    play(*sound(kind, opts))
     cmd = opts.get("notify-command")
     if cmd:
         env = dict(os.environ, AINAV_EVENT=kind, AINAV_TITLE=agent.title, AINAV_PROJECT=agent.tag,

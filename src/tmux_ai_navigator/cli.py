@@ -6,6 +6,7 @@
   tmux-ai-nav seen                             record which panes are on screen (tmux hooks)
   tmux-ai-nav later --pane PANE                toggle the "later" flag on the agent in PANE
   tmux-ai-nav watch [--start|--stop]           notify when agents finish or need you
+  tmux-ai-nav watch --test done|waiting        send a sample notification with your settings
   tmux-ai-nav demo                             run the picker on made-up sessions
 """
 import argparse
@@ -206,6 +207,12 @@ def cmd_watch(args):
     from . import notify
 
     disc = discovery(args)
+    if args.test:
+        from .agents import Agent
+        sample = Agent(kind="claude", pid=0, session_id="test", name="example", cwd=os.getcwd(), status="idle",
+                       since=time.time(), tmux_session="example", window_name="test", title="Test notification")
+        notify.deliver(disc.tmux, sample, args.test, notify.options(disc.tmux))
+        return 0
     if not (args.start or args.stop):
         return notify.watch(disc)
     server = disc.server()
@@ -273,6 +280,7 @@ def main(argv=None):
     p = sub.add_parser("watch", help="notify when agents finish or need you (runs until tmux exits)")
     p.add_argument("--start", action="store_true", help="start a detached watcher, replacing a running one")
     p.add_argument("--stop", action="store_true", help="stop this tmux server's watcher")
+    p.add_argument("--test", choices=["done", "waiting"], help="send a sample notification with your settings")
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("demo", help="run the picker on made-up sessions (no tmux needed)")
