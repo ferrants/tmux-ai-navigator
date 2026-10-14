@@ -653,6 +653,8 @@ class CodexTests(unittest.TestCase):
         uuid = "01a11994-502f-7042-ac0c-dff6c0dec7c2"
         self.assertEqual(codex.resume_id([tui, "--yolo", "resume", uuid]), uuid)
         self.assertEqual(codex.resume_id([tui, "resume", "--last"]), "")
+        self.assertEqual(codex.resume_id([tui, "-m", "gpt-5", "resume", uuid]), uuid)
+        self.assertEqual(codex.resume_id([tui, "fork", uuid]), "")
 
     def test_process_listing_linux_and_ps(self):
         root = tempfile.mkdtemp()
