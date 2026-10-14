@@ -46,7 +46,8 @@ class Tmux:
 
     def run(self, *args, check=True):
         try:
-            r = subprocess.run(self.base + list(args), capture_output=True, text=True, timeout=5)
+            r = subprocess.run(self.base + list(args), capture_output=True, encoding="utf-8",
+                               errors="replace", timeout=5)
         except (OSError, subprocess.SubprocessError) as e:
             raise TmuxError(str(e))
         if check and r.returncode != 0:

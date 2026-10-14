@@ -4,7 +4,7 @@ Configure it with `set -g @ainav-extras '<command>'` (or --extras). The command 
 stdin:
 
   {"sessions": [{"session_id": "...", "pid": 123, "cwd": "...", "status": "idle",
-                 "pane_id": "%3", "tmux_session": "work", "window_name": "api"}, ...]}
+                 "pane_id": "%3", "tmux_session": "work", "window_name": "api", "agent": "claude"}, ...]}
 
 and prints a JSON object keyed by session id. Every field is optional:
 
@@ -49,7 +49,7 @@ class Extras:
         self._at, self._ids = now, ids
         payload = {"sessions": [{"session_id": a.session_id, "pid": a.pid, "cwd": a.cwd, "status": a.status,
                                  "pane_id": a.pane_id, "tmux_session": a.tmux_session,
-                                 "window_name": a.window_name} for a in agents]}
+                                 "window_name": a.window_name, "agent": a.kind} for a in agents]}
         try:
             out = self.runner(self.command, json.dumps(payload))
             data = json.loads(out) if out.strip() else {}

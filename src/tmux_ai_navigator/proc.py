@@ -5,9 +5,11 @@ told apart. The token is platform specific, and we must produce exactly the same
   Linux:  field 22 of /proc/<pid>/stat (start time in clock ticks since boot)
   macOS:  `ps -o lstart= -p <pid>` with LC_ALL=C TZ=UTC, e.g. "Mon Oct 13 18:49:01 2026"
 """
+import calendar
 import os
 import subprocess
 import sys
+import time
 
 PROC = "/proc"
 
@@ -100,6 +102,63 @@ def ancestors(pid, table, limit=64):
         seen.add(pid)
         out.append(pid)
     return out
+
+
+def processes_named(name, proc=PROC, ps=None):
+    """[(pid, argv)] of processes whose executable is called `name`.
+
+    Linux: /proc/<pid>/comm, then the command line. Elsewhere: one `ps` listing, matching the
+    basename of the first word (paths with spaces in them are not expected here).
+    """
+    out = []
+    if ps is None and os.path.isdir(os.path.join(proc, "self")):
+        try:
+            names = os.listdir(proc)
+        except OSError:
+            return out
+        for p in names:
+            if not p.isdigit():
+                continue
+            try:
+                with open(os.path.join(proc, p, "comm")) as f:
+                    if f.read().strip() != name:
+                        continue
+                with open(os.path.join(proc, p, "cmdline"), "rb") as f:
+                    argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+            except OSError:
+                continue
+            out.append((int(p), argv))
+        return out
+    if ps is None:
+        try:
+            ps = subprocess.run(["ps", "-A", "-o", "pid=,args="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                universal_newlines=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return out
+    for line in ps.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and os.path.basename(parts[1]) == name:
+            try:
+                out.append((int(parts[0]), parts[1:]))
+            except ValueError:
+                continue
+    return out
+
+
+def start_epoch(token, proc=PROC):
+    """A start token (see the module docstring) as epoch seconds, or 0.0."""
+    token = str(token or "").strip()
+    if token.isdigit():  # Linux clock ticks since boot
+        try:
+            with open(os.path.join(proc, "stat")) as f:
+                btime = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+            return btime + int(token) / os.sysconf("SC_CLK_TCK")
+        except (OSError, StopIteration, ValueError):
+            return 0.0
+    try:  # macOS lstart, which we read in UTC
+        return float(calendar.timegm(time.strptime(" ".join(token.split()), "%a %b %d %H:%M:%S %Y")))
+    except ValueError:
+        return 0.0
 
 
 def pid_domain(proc=PROC, machine_id_path="/etc/machine-id"):

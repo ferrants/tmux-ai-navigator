@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from . import claude
+from . import claude, codex
 
 TAIL_BYTES = 512 * 1024
 _paths = {}
@@ -119,6 +119,8 @@ def titles(session_id):
 
 def summary(session_id):
     """{"title", "user", "assistant"} (any may be empty)."""
+    if codex.knows(session_id):
+        return codex.summary(session_id)
     path = find(session_id)
     if not path:
         return {}

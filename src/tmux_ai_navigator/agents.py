@@ -6,11 +6,12 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from . import claude, extras as extrasmod, state, transcript
+from . import claude, codex, extras as extrasmod, state, transcript
 from . import proc as procmod
 
 DAY = 86400
-GENERIC_WINDOWS = {"", "bash", "zsh", "sh", "fish", "claude", "node", "python", "python3"}
+CODEX_SCAN_S = 3.0
+GENERIC_WINDOWS = {"", "bash", "zsh", "sh", "fish", "claude", "codex", "node", "python", "python3"}
 SECTIONS = ["needs", "working", "today", "older"]
 SECTION_TITLES = {"needs": "NEEDS YOU", "working": "WORKING", "today": "TODAY", "older": "OLDER"}
 
@@ -95,7 +96,7 @@ class Agent:
 
     def search_text(self):
         return " ".join(str(x) for x in (
-            self.title, self.name, self.state_label, self.tag, self.location, self.window_name or "",
+            self.title, self.name, self.kind, self.state_label, self.tag, self.location, self.window_name or "",
             self.cwd, self.branch, self.session_id, self.pane_id or "", " ".join(self.extra_lines),
             self.extra_search, self.badge,
             "later" if self.later else ""))
@@ -213,7 +214,9 @@ class Discovery:
         self.extras = extras or extrasmod.Extras(None)
         self.domain = procmod.pid_domain(proc)
         self.state = state_store or state.State()
+        self.threads = codex.Threads()
         self._server = None
+        self._codex = (0.0, [])
         transcript.load_title_cache()
 
     def server(self):
@@ -221,9 +224,39 @@ class Discovery:
             self._server = self.tmux.server_pid()
         return self._server
 
+    def codex_tuis(self, table, now=None):
+        """Codex TUI processes, re-scanned every few seconds (a scan reads the process table)."""
+        now = now or time.time()
+        at, found = self._codex
+        if now - at >= CODEX_SCAN_S:
+            try:
+                found = codex.tuis(table, procmod.processes_named("codex", self.proc))
+            except Exception:  # never let Codex discovery break the Claude list
+                found = []
+            self._codex = (now, found)
+        return [(pid, argv) for pid, argv in found if table.info(pid)]
+
+    def codex_states(self):
+        """{pid: (status, process start)} of Codex TUIs in panes, from their pane titles
+        (for the notification watcher: cheap, no thread lookups)."""
+        table = procmod.snapshot(self.proc)
+        found = self.codex_tuis(table)
+        if not found:
+            return {}
+        panes = self.tmux.panes(strict=True)
+        mapping = map_to_panes([pid for pid, _ in found], panes, table)
+        out = {}
+        for pid, _ in found:
+            if mapping.get(pid):
+                info = table.info(pid)
+                out[pid] = (codex.parse_title(mapping[pid][0].pane_title)[0],
+                            procmod.start_epoch(info[1], self.proc) if info else 0.0)
+        return out
+
     def agents(self, current_session=None, include_untracked=False, record_seen=True, strict=False):
         table = procmod.snapshot(self.proc)
         entries = claude.live(self.files.read(), table, self.domain)
+        found = self.codex_tuis(table)
         panes = self.tmux.panes(strict=True) if strict else self.tmux.panes()
         visible = {p.pane_id for p in panes if p.on_screen}
         if record_seen:
@@ -231,23 +264,32 @@ class Discovery:
         else:
             st = self.state.read()
         view = state.server_view(st, self.server())
-        mapping = map_to_panes([d["pid"] for d in entries], panes, table, current_session)
+        mapping = map_to_panes([d["pid"] for d in entries] + [pid for pid, _ in found], panes, table,
+                               current_session)
+        try:
+            entries += codex.entries(found, mapping, table, self.threads, proc=self.proc)
+        except Exception:
+            pass
         out = []
         for d in entries:
-            since = d.get("statusUpdatedAt") or d.get("updatedAt")
-            started = d.get("startedAt")
             cwd = text(d.get("cwd"))
-            a = Agent(kind="claude", pid=d["pid"], session_id=d["sessionId"],
+            if d.get("agent") == "codex":
+                since, started = d.get("since"), d.get("started")
+            else:
+                since = d.get("statusUpdatedAt") or d.get("updatedAt")
+                started = d.get("startedAt")
+                since = since / 1000.0 if isinstance(since, (int, float)) else None
+                started = started / 1000.0 if isinstance(started, (int, float)) else None
+            a = Agent(kind=d.get("agent") or "claude", pid=d["pid"], session_id=d["sessionId"],
                       name=text(d.get("name")) or os.path.basename(cwd) or d["sessionId"][:8],
-                      cwd=cwd, status=text(d.get("status")) or "unknown",
-                      since=since / 1000.0 if isinstance(since, (int, float)) else None,
-                      started=started / 1000.0 if isinstance(started, (int, float)) else None)
+                      cwd=cwd, status=text(d.get("status")) or "unknown", since=since, started=started)
             hits = mapping.get(d["pid"])
             if hits:
                 p = hits[0]
                 a.pane_id, a.tmux_session_id, a.tmux_session = p.pane_id, p.session_id, p.session_name
                 a.window_id, a.window_index, a.window_name = p.window_id, p.window_index, p.window_name
-                a.pane_title = p.pane_title
+                if a.kind == "claude":  # Codex's title is its status line, handled in codex.py
+                    a.pane_title = p.pane_title
                 a.other_sessions = [h.session_name for h in hits[1:]]
                 a.on_screen = a.pane_id in visible
             elif not include_untracked:
@@ -256,10 +298,12 @@ class Discovery:
             a.done = state.is_done(a, view, visible)
             a.later = state.later_active(a, st)
             out.append(a)
+        names = {d["sessionId"]: (text(d.get("threadName")), text(d.get("firstMessage")))
+                 for d in entries if d.get("agent") == "codex"}
         info = self.extras.get(out)
         for a in out:
             extrasmod.apply(a, info.get(a.session_id) or {})
-            a.title = pick_title(a)
+            a.title = pick_title(a, names.get(a.session_id, ("", "")) if a.kind == "codex" else None)
         transcript.save_title_cache()
         return out
 

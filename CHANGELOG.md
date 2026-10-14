@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Codex CLI sessions: every Codex TUI in a tmux pane is listed with Claude's, with status
+  (working, waiting for an approval, done), title, timing, preview, later flags and
+  notifications. No setup: status is read from the pane title Codex keeps, the conversation
+  from Codex's thread database and log.
 - Notification sounds: `@ainav-notify-sound 'soft'` (now what `on` means) plays a short,
   quiet built-in chime instead of the desktop's sound theme; `system` keeps the old sounds.
   New `@ainav-notify-volume` (0-100).

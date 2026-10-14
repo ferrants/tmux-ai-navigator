@@ -28,6 +28,7 @@ import wave
 
 
 POLL_S = 0.5
+CODEX_POLL_S = 1.0  # Codex status lives in pane titles: one tmux call per poll
 OPTIONS_S = 5.0
 SOUNDS = {
     "linux": {"done": "/usr/share/sounds/freedesktop/stereo/complete.oga",
@@ -264,12 +265,15 @@ class Watcher:
         self.pending = {}  # (pid, session id) -> (kind, due)
         self.opts = dict(DEFAULTS)
         self._opts_at = 0.0
+        self.codex = {}  # (pid, "codex") -> (status, since, started), since as first observed
+        self._codex_at = 0.0
 
     def step(self):
         now = self.clock()
         if now - self._opts_at >= OPTIONS_S:
             self.opts, self._opts_at = options(self.disc.tmux), now
         cur = snapshot(self.disc.files.read())
+        cur.update(self.codex_snapshot(now))
         if self.prev is not None:
             wanted = {e.strip() for e in self.opts.get("notify-on", "").split(",")}
             try:
@@ -293,11 +297,29 @@ class Watcher:
         sent = []
         show_visible = self.opts.get("notify-visible") == "on"
         for a in found:
-            kind = due.get((a.pid, a.session_id))
+            kind = due.get((a.pid, "codex" if a.kind == "codex" else a.session_id))
             if kind and still(kind, a.status) and (show_visible or not a.on_screen):
                 self.deliver(self.disc.tmux, a, kind, self.opts)
                 sent.append((a.session_id, kind))
         return sent
+
+    def codex_snapshot(self, now):
+        """Codex TUIs' status from their pane titles, polled every CODEX_POLL_S. If tmux fails,
+        the last snapshot stands (so nothing looks like a change)."""
+        if now - self._codex_at < CODEX_POLL_S:
+            return self.codex
+        self._codex_at = now
+        try:
+            states = self.disc.codex_states()
+        except Exception:
+            return self.codex
+        cur = {}
+        for pid, (status, started) in states.items():
+            key = (pid, "codex")
+            old = self.codex.get(key)
+            cur[key] = (status, old[1] if old and old[0] == status else now, started)
+        self.codex = cur
+        return cur
 
     def run(self, alive):
         while alive():

@@ -17,6 +17,7 @@ FILTERS = [
     ("idle", lambda a: a.status == "idle" and not a.done),
 ]
 MODES = ["priority", "project"]
+KIND_MARKS = {"codex": "cx"}  # shown on rows of agents other than Claude Code
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TICK_MS = 250
 REFRESH_S = 1.0
@@ -240,7 +241,8 @@ class Picker:
         age = fmt_age(a.age(now))
         tag = fit(a.tag, 10)
         badge = fit(clean(a.badge), 8)
-        right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0)
+        mark = KIND_MARKS.get(a.kind, "")
+        right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0)
         title = clean(a.title) + (" (here)" if a.pane_id and a.pane_id == self.here else "")
         bold = curses.A_BOLD if a.section(now) in ("needs", "working") else 0
         x = x0 + 3
@@ -254,6 +256,9 @@ class Picker:
         title_attr = (c["text"] | bold) if not win_w else c["text"] if bold else c["muted"]
         self.put(y, x, fit("" if same else title, room), title_attr)
         x = x0 + w - right_w - 1
+        if mark:
+            self.put(y, x, mark, c["muted"])
+            x += len(mark) + 1
         if badge:
             self.put(y, x, badge, c[BADGE_COLORS.get(a.badge_style, "dim")])
             x += width(badge) + 1
@@ -314,7 +319,7 @@ class Picker:
             lines += [("  " + t, self.c["text"]) for t in wrap(plain(s["user"]), w - 2, 3)]
         if s.get("assistant"):
             lines.append(("", 0))
-            lines.append(("claude ›", self.c["claude"] | curses.A_BOLD))
+            lines.append((f"{a.kind} ›", self.c["claude"] | curses.A_BOLD))
             room = max(1, h - len(lines))
             lines += [("  " + t, self.c["muted"]) for t in wrap(plain(s["assistant"]), w - 2, room)]
         for i, (text, attr) in enumerate(lines[:h]):

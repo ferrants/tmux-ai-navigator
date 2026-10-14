@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from tmux_ai_navigator import agents, claude, extras, notify, proc, state, transcript  # noqa: E402
+from tmux_ai_navigator import agents, claude, codex, extras, notify, proc, state, transcript  # noqa: E402
 from tmux_ai_navigator.agents import Agent, arrange, clean_title, fmt_age, map_to_panes, pick_title, sort_agents  # noqa: E402
 from tmux_ai_navigator.tmux import Pane  # noqa: E402
 from tmux_ai_navigator.ui import build_items, fit, matches, width  # noqa: E402
@@ -599,3 +599,192 @@ class NotifyTests(unittest.TestCase):
         now[0] += 0.5
         w.step()
         self.assertEqual(sent, ["done"])
+
+
+def write_proc(root, pid, ppid, start, argv):
+    """A fake /proc entry with comm and cmdline, like a real process."""
+    write_stat(root, pid, ppid, start, comm=os.path.basename(argv[0])[:15])
+    with open(os.path.join(root, str(pid), "comm"), "w") as f:
+        f.write(os.path.basename(argv[0])[:15] + "\n")
+    with open(os.path.join(root, str(pid), "cmdline"), "wb") as f:
+        f.write(b"\0".join(a.encode() for a in argv) + b"\0")
+
+
+def codex_db(path, rows):
+    import sqlite3
+    con = sqlite3.connect(path)
+    con.execute("create table threads (id text primary key, rollout_path text, cwd text, name text, title text, "
+                "created_at integer, updated_at integer, created_at_ms integer, updated_at_ms integer, source text, "
+                "thread_source text, originator text, archived integer, first_user_message text)")
+    for r in rows:
+        r = dict({"rollout_path": "", "cwd": "/w", "name": None, "title": "", "created_at": 0, "updated_at": 0,
+                  "created_at_ms": None, "updated_at_ms": None, "source": "cli", "thread_source": "user",
+                  "originator": "codex-tui", "archived": 0, "first_user_message": ""}, **r)
+        con.execute(f"insert into threads ({', '.join(r)}) values ({', '.join('?' * len(r))})", list(r.values()))
+    con.commit()
+    con.close()
+
+
+def rollout(path, events):
+    with open(path, "w") as f:
+        for ts, typ, payload in events:
+            f.write(json.dumps({"timestamp": ts, "type": typ, "payload": payload}) + "\n")
+
+
+class CodexTests(unittest.TestCase):
+    def test_title_status_and_name(self):
+        self.assertEqual(codex.parse_title("[ ! ] Action Required | Fix login | api"), ("waiting", "Fix login"))
+        self.assertEqual(codex.parse_title("[ . ] Action Required | api"), ("waiting", ""))
+        self.assertEqual(codex.parse_title("⠼ Fix login | api"), ("busy", "Fix login"))
+        self.assertEqual(codex.parse_title("Fix login | api"), ("idle", "Fix login"))
+        self.assertEqual(codex.parse_title(" api"), ("idle", ""))  # older Codex: project only
+        self.assertEqual(codex.parse_title(""), ("idle", ""))
+
+    def test_which_processes_are_the_tui(self):
+        tui = "/usr/lib/node_modules/@openai/codex/vendor/bin/codex"
+        self.assertTrue(codex.is_tui([tui]))
+        self.assertTrue(codex.is_tui([tui, "--dangerously-bypass-hook-trust", "resume", "--last"]))
+        self.assertTrue(codex.is_tui([tui, "-m", "exec", "fix the tests"]))  # "exec" is the model name here
+        self.assertTrue(codex.is_tui([tui, "fix the tests"]))
+        self.assertFalse(codex.is_tui([tui, "exec", "--skip-git-repo-check", "review this"]))
+        self.assertFalse(codex.is_tui([tui, "-c", "x=1", "review", "--commit", "abc"]))
+        self.assertFalse(codex.is_tui([tui, "app-server", "daemon", "pid-update-loop"]))
+        self.assertFalse(codex.is_tui(["node", "/usr/bin/codex"]))  # the npm shim; its child is the TUI
+        uuid = "01a11994-502f-7042-ac0c-dff6c0dec7c2"
+        self.assertEqual(codex.resume_id([tui, "--yolo", "resume", uuid]), uuid)
+        self.assertEqual(codex.resume_id([tui, "resume", "--last"]), "")
+
+    def test_process_listing_linux_and_ps(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "self"))
+        write_proc(root, 70, 60, 500, ["/x/codex"])
+        write_proc(root, 80, 70, 510, ["/x/codex", "app-server", "daemon"])
+        write_proc(root, 90, 1, 520, ["/usr/bin/python3", "x.py"])
+        got = sorted(proc.processes_named("codex", root))
+        self.assertEqual(got, [(70, ["/x/codex"]), (80, ["/x/codex", "app-server", "daemon"])])
+        ps = "  70 /opt/homebrew/bin/codex resume\n  71 /bin/zsh -l\n  oops\n"
+        self.assertEqual(proc.processes_named("codex", ps=ps), [(70, ["/opt/homebrew/bin/codex", "resume"])])
+        # outermost TUI only: one started from inside another TUI's shell is the same pane
+        write_proc(root, 95, 70, 530, ["/x/codex"])
+        found = codex.tuis(proc.ProcTable(root), proc.processes_named("codex", root))
+        self.assertEqual([pid for pid, _ in found], [70])
+
+    def test_start_epoch(self):
+        self.assertEqual(proc.start_epoch("Wed Oct 14 10:50:59 2026"), 1791975059.0)
+        self.assertEqual(proc.start_epoch("Wed Oct  4 10:50:59 2026"), proc.start_epoch("Wed Oct 4 10:50:59 2026"))
+        root = tempfile.mkdtemp()
+        with open(os.path.join(root, "stat"), "w") as f:
+            f.write("cpu 1 2 3\nbtime 1000\n")
+        self.assertEqual(proc.start_epoch(str(5 * os.sysconf("SC_CLK_TCK")), root), 1005.0)
+        self.assertEqual(proc.start_epoch("garbage"), 0.0)
+
+    def test_threads_skip_exec_subagents_and_archived(self):
+        d = tempfile.mkdtemp()
+        codex_db(os.path.join(d, "state_5.sqlite"), [
+            {"id": "tui", "updated_at_ms": 5000, "created_at": 1},
+            {"id": "exec", "source": "exec", "originator": "codex_exec"},
+            {"id": "sub", "source": '{"subagent":"review"}', "thread_source": "subagent"},
+            {"id": "old", "archived": 1}])
+        codex_db(os.path.join(d, "state_4.sqlite"), [{"id": "stale"}])
+        with mock.patch.dict(os.environ, {"CODEX_HOME": d}):
+            rows = codex.Threads().rows()
+        self.assertEqual([(r["id"], r["updated"], r["created"]) for r in rows], [("tui", 5.0, 1.0)])
+        self.assertEqual(codex.Threads(os.path.join(d, "missing.sqlite")).rows(), [])
+
+    def test_matching_conversations_to_tuis(self):
+        threads = [{"id": "named", "name": "Fix login", "cwd": "/w", "updated": 50.0},
+                   {"id": "resumed", "name": None, "cwd": "/w", "updated": 10.0},
+                   {"id": "recent", "name": None, "cwd": "/w", "updated": 300.0},
+                   {"id": "other", "name": None, "cwd": "/elsewhere", "updated": 400.0}]
+        sessions = [{"pid": 1, "start": 0, "cwd": "/w", "name": "Fix login", "resume": ""},
+                    {"pid": 2, "start": 0, "cwd": "/w", "name": "", "resume": "resumed"},
+                    {"pid": 3, "start": 200, "cwd": "/w", "name": "", "resume": ""},
+                    {"pid": 4, "start": 290, "cwd": "/w", "name": "", "resume": ""}]
+        got = {pid: t["id"] for pid, t in codex.match(sessions, threads).items()}
+        # pid 4 is newest and picks first; pid 3 then has nothing active since it started
+        self.assertEqual(got, {1: "named", 2: "resumed", 4: "recent"})
+
+    def test_rollout_tail(self):
+        path = os.path.join(tempfile.mkdtemp(), "r.jsonl")
+        msg = lambda role, text: {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}  # noqa: E731
+        rollout(path, [
+            ("2026-10-14T16:59:54.574Z", "event_msg", {"type": "task_started"}),
+            ("2026-10-14T16:59:55.184Z", "response_item", msg("user", "<environment_context>…")),
+            ("2026-10-14T16:59:55.551Z", "response_item", msg("user", "Say hello")),
+            ("2026-10-14T16:59:57.646Z", "response_item", {"type": "message", "role": "assistant",
+                                                           "content": [{"type": "output_text", "text": "Hello"}]}),
+            ("2026-10-14T16:59:57.792Z", "event_msg", {"type": "task_complete"})])
+        with open(path, "a") as f:
+            f.write("{not json\n")
+        t = codex.tail(path)
+        self.assertEqual((t["user"], t["assistant"]), ("Say hello", "Hello"))
+        self.assertAlmostEqual(t["started"], 1791997194.574, places=3)
+        self.assertAlmostEqual(t["finished"], 1791997197.792, places=3)
+        self.assertEqual(codex.tail(os.path.join(path, "missing")), {})
+
+    def test_discovery_lists_codex_panes(self):
+        root, home, sessions = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "self"))
+        write_stat(root, 50, 1, 100, comm="bash")                          # pane %1's shell
+        write_proc(root, 60, 50, 110, ["node", "/usr/bin/codex"])           # the npm shim
+        write_proc(root, 70, 60, 120, ["/x/codex"])                         # the TUI
+        write_proc(root, 80, 70, 130, ["/x/codex", "app-server", "daemon"])  # shared app-server
+        write_stat(root, 51, 1, 100, comm="bash")                          # pane %2's shell
+        write_proc(root, 71, 51, 140, ["/x/codex", "exec", "review this"])  # not interactive
+        path = os.path.join(home, "r.jsonl")
+        rollout(path, [("2026-10-14T16:59:54.000Z", "event_msg", {"type": "task_started"}),
+                       ("2026-10-14T16:59:55.000Z", "response_item",
+                        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix it"}]})])
+        codex_db(os.path.join(home, "state_5.sqlite"), [
+            {"id": "t1", "name": "Fix login", "cwd": "/w/api", "rollout_path": path, "created_at": 50,
+             "updated_at": 1791997195}])
+
+        class Tmux(FakeTmux):
+            def panes(self, strict=False):
+                return [Pane("%1", 50, "$1", "2api", "@1", 1, "node", True, True, "/w/api", "⠼ Fix login | api"),
+                        Pane("%2", 51, "$1", "2api", "@2", 2, "claude", True, False, "/w/api", "✳ Something")]
+
+        with mock.patch.dict(os.environ, {"CODEX_HOME": home}):
+            d = agents.Discovery(Tmux(), sessions, proc=root, state_store=state.State(tempfile.mkdtemp()))
+            got = d.agents(record_seen=False)
+            self.assertEqual([(a.kind, a.pid, a.session_id, a.status, a.title, a.pane_id, a.tag) for a in got],
+                             [("codex", 70, "t1", "busy", "Fix login", "%1", "api")])
+            self.assertAlmostEqual(got[0].since, 1791997194.0)
+            self.assertEqual(transcript.summary("t1")["user"], "fix it")
+            self.assertEqual(d.codex_states(), {70: ("busy", proc.start_epoch("120", root))})
+
+    def test_watcher_notifies_for_codex_title_changes(self):
+        status = ["busy"]
+
+        class Files:
+            def read(self):
+                return []
+
+        class Disc:
+            tmux = None
+            files = Files()
+
+            def codex_states(self):
+                return {70: (status[0], 0.0)}
+
+            def agents(self, record_seen=True, strict=False):
+                return [Agent(kind="codex", pid=70, session_id="t1", name="api", cwd="/w", status=status[0],
+                              since=None, pane_id="%1")]
+
+        sent, now = [], [100.0]
+        w = notify.Watcher(Disc(), deliver_fn=lambda t, a, k, o: sent.append((a.session_id, k)),
+                           clock=lambda: now[0])
+        w._opts_at = 1e18
+        w.step()
+        status[0] = "idle"
+        now[0] = 101.0
+        w.step()
+        now[0] = 102.5
+        w.step()
+        self.assertEqual(sent, [("t1", "done")])
+        status[0] = "waiting"
+        now[0] = 104.0
+        w.step()
+        now[0] = 105.5
+        w.step()
+        self.assertEqual(sent, [("t1", "done"), ("t1", "waiting")])

@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tmux-ai-navigator"
 version = "0.1.0"
-description = "Find and jump to AI coding agent sessions (Claude Code) running in tmux"
+description = "Find and jump to AI coding agent sessions (Claude Code, Codex CLI) running in tmux"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
 dependencies = []
 authors = [{ name = "Matt Ferrante" }]
-keywords = ["tmux", "claude", "claude-code", "ai", "agents", "terminal"]
+keywords = ["tmux", "claude", "claude-code", "codex", "ai", "agents", "terminal"]
 classifiers = [
     "Environment :: Console :: Curses",
     "License :: OSI Approved :: MIT License",

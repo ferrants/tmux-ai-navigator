@@ -2,7 +2,8 @@
 
 A picker for the AI coding agents running in your tmux panes. It's like
 [herdr](https://herdr.dev)'s agent list, but for tmux. It shows every
-[Claude Code](https://claude.com/claude-code) session in every tmux session and window,
+[Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex)
+session in every tmux session and window,
 grouped by what needs you: sessions **waiting** for an answer, ones that **finished since
 you last looked**, and ones you flagged for **later**. Then come sessions that are working,
 active today, and older ones. A preview shows each session's last prompt and reply. You can
@@ -18,8 +19,9 @@ Try it without any sessions of your own: `bin/tmux-ai-nav demo`.
 - tmux 3.0 or newer. On tmux 3.2+ the picker opens in a popup; on 3.0 and 3.1 it opens in
   a temporary window.
 - Python 3.8 or newer, standard library only.
-- Claude Code. It writes a status file for each running session in `~/.claude/sessions/`,
-  and that's where the list comes from.
+- Claude Code and/or Codex CLI. Claude Code writes a status file for each running session in
+  `~/.claude/sessions/`; Codex sessions are found from the panes they run in (see
+  [Codex](#codex)). Nothing to install or configure for either.
 
 ## Install
 
@@ -74,9 +76,9 @@ to choose a key. A key you set explicitly is always bound.
 `prefix a` opens the picker. `esc` closes it (in the window version, so does pressing
 `prefix a` again).
 
-Each row shows the tmux window name, Claude's title for the session, the project (the tmux
-session name without a leading number, e.g. `2api` → `api`), and how long it has been in its
-current state.
+Each row shows the tmux window name, the session's title, the project (the tmux session name
+without a leading number, e.g. `2api` → `api`), and how long it has been in its current state.
+Codex sessions are marked `cx`.
 
 | icon | |
 |---|---|
@@ -109,6 +111,24 @@ TERM is upgraded to its `-256color` variant for the picker, and tmux maps colors
 clients that can't show them. On 8-color terminals it falls back to the basic ANSI colors.
 
 From scripts: `tmux-ai-nav list [--json] [--all]`.
+
+## Codex
+
+Codex sessions show up next to Claude's, with the same sections, preview, "done" tracking,
+later flags and notifications. Every `codex` TUI running in a tmux pane is listed (`codex exec`,
+`codex review` and Codex's background app-server are not).
+
+Codex runs the conversations of all its TUIs in one shared background process, so the pane a
+conversation belongs to can't be learned from its hooks or its process. Instead:
+
+- **Status** comes from the pane title, which the Codex TUI keeps current: a spinner while it
+  works, `[ ! ] Action Required` while it waits for an approval, the plain name when idle. If you
+  change Codex's `tui.terminal_title` setting, Codex sessions show as idle.
+- **The conversation** (its name, when the last turn started or finished, the last prompt and
+  reply) comes from Codex's thread database (`$CODEX_HOME/state_*.sqlite`, read-only) and the
+  conversation log. A pane is matched to its conversation by the name in its title, by
+  `codex resume <id>`, or else by folder and start time. A TUI that hasn't been prompted yet
+  has no conversation and is listed as idle.
 
 ## Notifications
 
@@ -161,7 +181,8 @@ The command gets the sessions as JSON on stdin:
 
 ```json
 {"sessions": [{"session_id": "…", "pid": 4121, "cwd": "/home/me/code/api", "status": "idle",
-               "pane_id": "%3", "tmux_session": "2api", "window_name": "rate-limits"}]}
+               "pane_id": "%3", "tmux_session": "2api", "window_name": "rate-limits",
+               "agent": "claude"}]}
 ```
 
 and prints a JSON object keyed by session id. Every field is optional, and sessions can be
@@ -203,7 +224,8 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
   client that pressed the key to that session, window and pane. Naming the session handles
   windows linked into several sessions.
 - **Notifications.** `tmux-ai-nav watch` polls the session files twice a second and only
-  looks at panes and titles when a session's status actually changes.
+  looks at panes and titles when a session's status actually changes. While Codex TUIs are
+  running, it also reads pane titles once a second (one tmux call).
 - **Done.** tmux hooks (`after-select-window`, `after-select-pane`, `client-session-changed`, …)
   run `tmux-ai-nav seen`, which records the panes on screen and the panes that just left it.
   A session is "done" when it went idle after real work, later than its pane was last seen.
@@ -223,7 +245,11 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
   tool catches up.
 - Closing a terminal window without detaching doesn't run tmux's detach hook, so a session
   that finishes while that window is gone may not show as done.
-- Only Claude Code for now. Sessions that aren't inside tmux show up in `list --all` only.
+- Claude Code and Codex CLI only. Claude sessions that aren't inside tmux show up in
+  `list --all` only; Codex sessions outside tmux aren't listed (their status comes from the
+  pane).
+- Matching a Codex pane to its conversation is a best guess when the title has no name (older
+  Codex versions) and several Codex TUIs share a folder: two of them may swap previews.
 
 ## Uninstall
 
@@ -248,7 +274,6 @@ bin/tmux-ai-nav demo                    # the picker on made-up sessions
 ## Roadmap
 
 - Clicking a desktop notification to jump to its pane.
-- Other agents (Codex, …).
 - A preview of the end of each session's pane, and a status-line count.
 
 ## License
