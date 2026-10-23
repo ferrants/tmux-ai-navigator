@@ -7,6 +7,7 @@
     back            the picker view to come back to after a jump (see views.py)
     recent[tty]     {panes, at}: panes that client looked at, most recent first (prefix A)
   later[session_id] when the user flagged a Claude session to come back to
+  pins[session_id]  when the user pinned a session to the top of the picker (until unpinned)
 
 Records of servers that are gone are dropped, so a restarted tmux starts fresh.
 
@@ -41,8 +42,9 @@ class State:
             d = {}
         if not isinstance(d.get("servers"), dict):
             d["servers"] = {}
-        if not isinstance(d.get("later"), dict):
-            d["later"] = {}
+        for k in ("later", "pins"):
+            if not isinstance(d.get(k), dict):
+                d[k] = {}
         if "server" in d:  # single-server layout of earlier versions
             if isinstance(d.get("seen"), dict) and str(d["server"]) not in d["servers"]:
                 d["servers"][str(d["server"])] = {"seen": d["seen"], "visible": d.get("visible") or [],
@@ -85,6 +87,7 @@ def mark_visible(d, server, visible_now, now=None, extra_seen=(), alive=None):
     v["visible"] = sorted(set(visible_now))
 
 
+MAX_PINS = 100
 RECENT_PANES = 20
 RECENT_CLIENTS = 16
 
@@ -136,6 +139,19 @@ def toggle_later(d, session_id, since=None, now=None):
         del d["later"][session_id]
         return False
     d["later"][session_id] = now or time.time()
+    return True
+
+
+def toggle_pin(d, session_id, now=None):
+    """Pin or unpin. Pins last until unpinned (they're kept for sessions that aren't running, so
+    a resumed session comes back pinned); only the most recent MAX_PINS are kept."""
+    if session_id in d["pins"]:
+        del d["pins"][session_id]
+        return False
+    d["pins"][session_id] = now or time.time()
+    if len(d["pins"]) > MAX_PINS:
+        keep = sorted(d["pins"].items(), key=lambda kv: kv[1] if isinstance(kv[1], (int, float)) else 0)
+        d["pins"] = dict(keep[-MAX_PINS:])
     return True
 
 

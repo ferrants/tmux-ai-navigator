@@ -6,7 +6,7 @@ A picker for the AI coding agents running in your tmux panes. It's like
 session in every tmux session and window,
 grouped by what needs you: sessions **waiting** for an answer, ones that **finished since
 you last looked**, and ones you flagged for **later**. Then come sessions that are working,
-active today, and older ones. A preview shows each session's last prompt and reply. You can
+active today, and older ones. Sessions you **pin** stay above all of that until you unpin them. A preview shows each session's last prompt and reply. You can
 search the list and press Enter to jump to that pane.
 
 ![The picker with made-up sessions: moving through the list, searching the previews, switching tabs, grouping by project and flagging for later](docs/demo.gif)
@@ -59,6 +59,7 @@ with TPM, or the `run-shell` line for a manual install.
 set -g @ainav-key 'a'                # prefix key that opens/closes the picker (default a)
 set -g @ainav-later-key 'u'          # prefix key: flag the current pane's session for later (default u)
 set -g @ainav-last-key 'A'           # prefix key: back to the agent you were on before (default A)
+set -g @ainav-pin-key 'P'            # prefix key: pin the current pane's session to the top (default P)
 set -g @ainav-popup 'on'             # tmux 3.2+: popup (on) or temporary window (off)
 set -g @ainav-popup-width '90%'
 set -g @ainav-popup-height '85%'
@@ -72,7 +73,7 @@ set -g @ainav-resume '10'            # minutes the "↺ back" view is offered af
 The plugin doesn't take a key that's already bound. Many configs use `prefix a` for
 `send-prefix`, for example, and URL plugins often use `prefix u`. If a default key is taken,
 the plugin skips it and says so in the status line; set `@ainav-key` or `@ainav-later-key`
-to choose a key (`@ainav-last-key` for `prefix A`). A key you set explicitly is always bound.
+to choose a key (`@ainav-last-key` for `prefix A`, `@ainav-pin-key` for `prefix P`). A key you set explicitly is always bound.
 
 ## Use
 
@@ -100,11 +101,19 @@ Codex sessions are marked `cx`.
 | tab / shift-tab | next / previous tab (see below) |
 | ctrl-s | group: priority sections, or by project |
 | ctrl-l | flag or unflag the selected session for later |
+| ctrl-t | pin or unpin the selected session |
 | ctrl-u / ctrl-w | clear the search / delete the last word |
 | esc | clear the search, or quit if it's empty |
 
 `prefix u` flags the session in the current pane for later without opening the picker. A
 flag clears once you prompt that session again.
+
+Pins are for the sessions you want to keep in mind. A pinned session sits in a PINNED section
+at the top (in every tab, and above the project groups with `ctrl-s`), most recently active
+first, and stays there after you reply. Its row still shows whether it's waiting, done or
+working, and it still counts in "need you". `ctrl-t` pins in the picker, `prefix P` pins the
+session in the current pane; press again to unpin. Pins belong to the Claude or Codex
+session, so they survive a tmux restart and come back when you resume the session.
 
 `prefix A` jumps back to the agent you were on before, across tmux sessions and windows, and
 pressing it again bounces between the two, like `cd -`. Only agent panes count, so a shell you
@@ -290,7 +299,7 @@ Remove the plugin line from `~/.tmux.conf`, then:
 ~/.tmux/plugins/tmux-ai-navigator/bin/tmux-ai-nav watch --stop   # the notification watcher
 for h in after-select-pane after-select-window session-window-changed client-session-changed \
          client-attached client-detached; do tmux set-hook -gu "$h[87]"; done
-tmux unbind a; tmux unbind u    # or your @ainav-key / @ainav-later-key
+tmux unbind a; tmux unbind u; tmux unbind A; tmux unbind P    # or your @ainav-*-key keys
 rm -rf ~/.local/state/tmux-ai-navigator ~/.cache/tmux-ai-navigator
 ```
 

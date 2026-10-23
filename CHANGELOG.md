@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pins: `ctrl-t` in the picker or `prefix P` (`@ainav-pin-key`) keeps a session in a PINNED
+  section at the top until you unpin it, even after you reply. Pins survive tmux restarts.
 - Tabs: `tab` now switches between all, the tmux session and the project (git repo) you
   opened the picker from, each with its own search and cursor. The status filters it used to
   cycle are gone; the sections already put waiting and working sessions first.

@@ -251,6 +251,20 @@ class SortSearchTests(unittest.TestCase):
         self.assertEqual(got, [("needs", ["ask", "fin", "flag"]), ("working", ["run"]),
                                ("today", ["recent", "older-today"]), ("older", ["old"])])
 
+    def test_pinned_first_by_recent_activity_in_both_modes(self):
+        now = self.NOW
+        a = [ag("ask", "waiting", since=now - 50), ag("pin-old", since=now - 3 * 86400, pinned=True),
+             ag("pin-ask", "waiting", since=now - 500, session="api", pinned=True),
+             ag("pin-run", "busy", since=now - 5, pinned=True), ag("idle", since=now - 60)]
+        got = [(k, [x.name for x in items]) for k, _, items in arrange(a, now=now)]
+        self.assertEqual(got, [("pinned", ["pin-run", "pin-ask", "pin-old"]), ("needs", ["ask"]),
+                               ("today", ["idle"])])
+        got = [(t, [x.name for x in items]) for _, t, items in arrange(a, "project", now)]
+        self.assertEqual(got, [("PINNED", ["pin-run", "pin-ask", "pin-old"]), ("S", ["ask", "idle"])])
+        self.assertEqual(a[2].section(now), "needs")  # still counts as needing you
+        items, _ = build_items(a, "pinned", views.ALL, "priority", False, now)
+        self.assertEqual([it[1].name for it in items if it[0] == "agent"], ["pin-run", "pin-ask", "pin-old"])
+
     def test_project_mode_groups_by_tmux_session_tag(self):
         now = self.NOW
         a = [ag("a", session="1web", since=now - 9), ag("b", session="api", since=now - 1),
@@ -578,6 +592,22 @@ class StateTests(unittest.TestCase):
         self.assertFalse(state.later_active(a, d))
         self.assertTrue(state.toggle_later(d, "x", since=a.since, now=300.0))  # expired: one press re-flags
         self.assertTrue(state.later_active(a, d))
+
+    def test_pins_toggle_persist_and_are_bounded(self):
+        st = state.State(tempfile.mkdtemp())
+        self.assertEqual(st.read()["pins"], {})
+        with st.update() as d:
+            self.assertTrue(state.toggle_pin(d, "s1", now=5.0))
+        self.assertEqual(st.read()["pins"], {"s1": 5.0})
+        with st.update() as d:
+            self.assertFalse(state.toggle_pin(d, "s1"))
+        self.assertEqual(st.read()["pins"], {})
+        d = {"pins": {}}
+        for i in range(state.MAX_PINS + 5):
+            state.toggle_pin(d, f"s{i}", now=float(i + 1))
+        self.assertEqual(len(d["pins"]), state.MAX_PINS)
+        self.assertNotIn("s0", d["pins"])
+        self.assertIn(f"s{state.MAX_PINS + 4}", d["pins"])
 
     def test_store_roundtrip(self):
         st = state.State(tempfile.mkdtemp())

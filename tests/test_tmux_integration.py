@@ -103,6 +103,15 @@ class TmuxIntegration(unittest.TestCase):
         index = self.t.run("display", "-p", "-t", self.pane, "#{window_index}").strip()
         self.assertEqual(a["location"], f"work:{index}")
 
+    def test_pin_toggles_and_lists(self):
+        rc, _ = self.run_cli("pin", "--pane", self.pane)
+        self.assertEqual(rc, 0)
+        _, out = self.run_cli("list", "--json")
+        self.assertTrue(json.loads(out)[0]["pinned"])
+        self.run_cli("pin", "--pane", self.pane)
+        _, out = self.run_cli("list", "--json")
+        self.assertFalse(json.loads(out)[0]["pinned"])
+
     def test_open_toggles_picker_window(self):
         home_pane = self.t.run("display", "-p", "-t", "home:", "#{pane_id}").strip()
         self.assertEqual(self.run_cli("open", "--pane", home_pane)[0], 0)

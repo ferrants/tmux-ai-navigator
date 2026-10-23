@@ -19,7 +19,7 @@ TICK_MS = 250
 REFRESH_S = 1.0
 BADGE_COLORS = {"warn": "err", "info": "accent", "dim": "dim"}
 
-HELP = "enter jump · type to search · ↑↓ move · ⇥ tabs · ^s group · ^l later · esc clear/quit"
+HELP = "enter jump · type to search · ↑↓ move · ⇥ tabs · ^s group · ^l later · ^t pin · esc clear/quit"
 
 # Tokyo Night (night), as the nearest xterm-256 colors; -1/None = terminal default
 TOKYO_NIGHT = {
@@ -198,9 +198,10 @@ class Picker:
     show_older = tab_property("show_older")
 
     def __init__(self, load, here_pane=None, toggle_later=None, summarize=None, warning=None,
-                 scopes=None, back=None, default_tab="all", previous=None):
+                 scopes=None, back=None, default_tab="all", previous=None, toggle_pin=None):
         self.load = load                # () -> list[Agent]
         self.toggle_later_cb = toggle_later
+        self.toggle_pin_cb = toggle_pin
         self.summarize = summarize or transcript.summary  # session id -> {"user", "assistant"}
         self.warning = warning          # () -> problem to show in the footer, or ""
         self.here = here_pane
@@ -399,6 +400,8 @@ class Picker:
             st, attr = f"idle · {age}", self.c["dim"]
         if a.later:
             st += "  ⚑ later"
+        if a.pinned:
+            st += "  pinned"
         lines.append((st, attr))
         if a.extra_lines:
             lines.append(("", 0))
@@ -484,7 +487,7 @@ class Picker:
         for i, it in enumerate(items[self.top:self.top + list_h]):
             y = top + i
             if it[0] == "header":
-                attr = {"needs": self.c["wait"], "working": self.c["busy"]}.get(it[1], self.c["head"])
+                attr = {"needs": self.c["wait"], "working": self.c["busy"], "pinned": self.c["accent"]}.get(it[1], self.c["head"])
                 if it[1].startswith("p:"):
                     attr = self.tag_attr(it[1][2:])
                 self.put(y, 1, it[2], attr | curses.A_BOLD)
@@ -601,6 +604,13 @@ class Picker:
                     self.flash = f"{'flagged' if on else 'unflagged'} for later: {a.title}"
                     self.refresh()
                     last = time.time()
+            elif k == "\x14":
+                if sel is not None and items[sel][0] == "agent" and self.toggle_pin_cb:
+                    a = items[sel][1]
+                    on = self.toggle_pin_cb(a)
+                    self.flash = f"{'pinned' if on else 'unpinned'}: {a.title}"
+                    self.refresh()
+                    last = time.time()
             elif k in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
                 self.query, reset = self.query[:-1], True
             elif k == "\x15":
@@ -635,7 +645,7 @@ def upgrade_term():
 
 def pick(load, here_pane=None, toggle_later=None, summarize=None, warning=None, **tabs):
     """Run the picker; returns (agent or None, view to save as the back view or None).
-    tabs: scopes, back, default_tab (see Picker)."""
+    tabs: scopes, back, default_tab, previous, toggle_pin (see Picker)."""
     os.environ.setdefault("ESCDELAY", "25")
     upgrade_term()
     picker = Picker(load, here_pane, toggle_later, summarize, warning, **tabs)

@@ -13,7 +13,7 @@ DAY = 86400
 CODEX_SCAN_S = 3.0
 GENERIC_WINDOWS = {"", "bash", "zsh", "sh", "fish", "claude", "codex", "node", "python", "python3"}
 SECTIONS = ["needs", "working", "today", "older"]
-SECTION_TITLES = {"needs": "NEEDS YOU", "working": "WORKING", "today": "TODAY", "older": "OLDER"}
+SECTION_TITLES = {"pinned": "PINNED", "needs": "NEEDS YOU", "working": "WORKING", "today": "TODAY", "older": "OLDER"}
 
 
 @dataclass
@@ -46,6 +46,7 @@ class Agent:
     on_screen: bool = False
     done: bool = False
     later: bool = False
+    pinned: bool = False
 
     @property
     def in_tmux(self):
@@ -100,7 +101,7 @@ class Agent:
             self.title, self.name, self.kind, self.state_label, self.tag, self.location, self.window_name or "",
             self.cwd, self.branch, self.session_id, self.pane_id or "", " ".join(self.extra_lines),
             self.extra_search, self.badge,
-            "later" if self.later else ""))
+            "later" if self.later else "", "pinned" if self.pinned else ""))
 
 
 def map_to_panes(pids, panes, table, current_session=None):
@@ -299,6 +300,7 @@ class Discovery:
             a.branch = git_branch(a.cwd)
             a.done = state.is_done(a, view, visible)
             a.later = state.later_active(a, st)
+            a.pinned = a.session_id in st["pins"]
             out.append(a)
         names = {d["sessionId"]: (text(d.get("threadName")), text(d.get("firstMessage")))
                  for d in entries if d.get("agent") == "codex"}
@@ -327,14 +329,22 @@ class Discovery:
         with self.state.update() as st:
             return state.toggle_later(st, agent.session_id, agent.since)
 
+    def toggle_pin(self, agent):
+        with self.state.update() as st:
+            return state.toggle_pin(st, agent.session_id)
+
 
 def arrange(agents, mode="priority", now=None):
     """[(section_key, title, [agents])] in display order.
 
     priority: needs you / working / today / older, each sorted by attention then recency.
     project:  one group per tmux session, most recently active first.
+    Pinned sessions come first in either mode, in their own group, most recently active first.
     """
     now = now or time.time()
+    pinned = sorted((a for a in agents if a.pinned), key=lambda a: a.age(now) if a.since else float("inf"))
+    head = [("pinned", SECTION_TITLES["pinned"], pinned)] if pinned else []
+    agents = [a for a in agents if not a.pinned]
 
     def rank(a):
         attention = 0 if a.status == "waiting" else 1 if a.done else 2 if a.later else 3
@@ -345,11 +355,11 @@ def arrange(agents, mode="priority", now=None):
         for a in agents:
             groups.setdefault(a.tag, []).append(a)
         ordered = sorted(groups.items(), key=lambda kv: min(rank(a) for a in kv[1]))
-        return [(f"p:{tag}", tag.upper(), sorted(items, key=rank)) for tag, items in ordered]
+        return head + [(f"p:{tag}", tag.upper(), sorted(items, key=rank)) for tag, items in ordered]
     by = {k: [] for k in SECTIONS}
     for a in agents:
         by[a.section(now)].append(a)
-    return [(k, SECTION_TITLES[k], sorted(by[k], key=rank)) for k in SECTIONS if by[k]]
+    return head + [(k, SECTION_TITLES[k], sorted(by[k], key=rank)) for k in SECTIONS if by[k]]
 
 
 def sort_agents(agents, mode="priority", now=None):

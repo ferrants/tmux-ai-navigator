@@ -38,7 +38,7 @@ SESSIONS = [
      "- images without alt text on the pricing page\n\nFixes are in a draft PR."),
     ("2api", "", "Upgrade to Postgres 16", "shell", 1 * H + 5 * M, "", "pg16",
      "upgrade the dev database to postgres 16", "Running the migration test suite in the background..."),
-    ("3infra", "ci-cache", "Speed up CI with dependency caching", "idle", 2 * H + 30 * M, "", "ci-cache",
+    ("3infra", "ci-cache", "Speed up CI with dependency caching", "idle", 2 * H + 30 * M, "pin", "ci-cache",
      "ci takes 14 minutes, can we cache dependencies?",
      "Cached node_modules and the Docker layers. CI now takes about 6 minutes on a warm cache."),
     ("1web", "a11y", "Keyboard navigation in the editor", "idle", 4 * H, "", "a11y-editor",
@@ -79,6 +79,7 @@ class Demo:
     def __init__(self, now=None):
         self.t0 = now or time.time()
         self.later = set()
+        self.pins = set()
         self.list = []
         for i, (sess, win, title, status, age, flags, branch, you, said) in enumerate(SESSIONS):
             project = sess.lstrip("0123456789")
@@ -91,6 +92,8 @@ class Demo:
             a.done = "done" in flags
             if "later" in flags:
                 self.later.add(a.session_id)
+            if "pin" in flags:
+                self.pins.add(a.session_id)
             if i in EXTRAS:
                 a.badge, a.badge_style, a.extra_lines = EXTRAS[i]
             a.summary = {"user": you, "assistant": said}
@@ -101,6 +104,7 @@ class Demo:
     def agents(self):
         for a in self.list:
             a.later = a.session_id in self.later
+            a.pinned = a.session_id in self.pins
         return list(self.list)
 
     def toggle_later(self, agent):
@@ -108,6 +112,13 @@ class Demo:
             self.later.discard(agent.session_id)
             return False
         self.later.add(agent.session_id)
+        return True
+
+    def toggle_pin(self, agent):
+        if agent.session_id in self.pins:
+            self.pins.discard(agent.session_id)
+            return False
+        self.pins.add(agent.session_id)
         return True
 
     def summary(self, session_id):

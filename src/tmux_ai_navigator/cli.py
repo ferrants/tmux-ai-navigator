@@ -5,6 +5,7 @@
   tmux-ai-nav list [--json] [--all]            print the agents found
   tmux-ai-nav seen                             record which panes are on screen (tmux hooks)
   tmux-ai-nav later --pane PANE                toggle the "later" flag on the agent in PANE
+  tmux-ai-nav pin --pane PANE                  pin or unpin the agent in PANE (top of the picker)
   tmux-ai-nav last --client TTY --pane PANE    jump to the agent pane you were on before this one
   tmux-ai-nav watch [--start|--stop]           notify when agents finish or need you
   tmux-ai-nav watch --test done|waiting        send a sample notification with your settings
@@ -78,7 +79,7 @@ def cmd_list(args):
         print(json.dumps([dict(asdict(a), location=a.location) for a in agents], indent=2))
         return 0
     for a in agents:
-        print("\t".join([a.state_label + (",later" if a.later else ""), fmt_age(a.age()), a.title,
+        print("\t".join([a.state_label + (",later" if a.later else "") + (",pinned" if a.pinned else ""), fmt_age(a.age()), a.title,
                          a.tag, a.location, a.pane_id or "", a.branch, a.cwd]))
     return 0
 
@@ -174,7 +175,8 @@ def cmd_ui(args):
     except Exception:  # no server or unreadable state: just open fresh
         pass
     choice, view = pick(lambda: disc.agents(current_session=current), here_pane=args.here,
-                        toggle_later=disc.toggle_later, warning=lambda: disc.extras.error,
+                        toggle_later=disc.toggle_later, toggle_pin=disc.toggle_pin,
+                        warning=lambda: disc.extras.error,
                         previous=lambda agents: getattr(previous_agent(disc, args.client, args.here, agents),
                                                         "pane_id", None),
                         scopes=views.opener_scopes(current, name, cwd), back=back,
@@ -256,15 +258,30 @@ def cmd_seen(args):
     return 0
 
 
-def cmd_later(args):
+def pane_agent(args):
     tmux = make_tmux(args)
     disc = discovery(args, tmux)
     agent = next((a for a in disc.agents(record_seen=False) if a.pane_id == args.pane), None)
     if not agent:
-        tmux.run("display-message", "tmux-ai-nav: no Claude session in this pane", check=False)
+        tmux.run("display-message", "tmux-ai-nav: no AI session in this pane", check=False)
+    return tmux, disc, agent
+
+
+def cmd_later(args):
+    tmux, disc, agent = pane_agent(args)
+    if not agent:
         return 1
     on = disc.toggle_later(agent)
     tmux.run("display-message", f"{'flagged' if on else 'unflagged'} for later: {agent.title}", check=False)
+    return 0
+
+
+def cmd_pin(args):
+    tmux, disc, agent = pane_agent(args)
+    if not agent:
+        return 1
+    on = disc.toggle_pin(agent)
+    tmux.run("display-message", f"{'pinned' if on else 'unpinned'}: {agent.title}", check=False)
     return 0
 
 
@@ -303,7 +320,7 @@ def cmd_demo(args):
     locale.setlocale(locale.LC_ALL, "")
     data = demo.Demo()
     choice, _ = pick(data.agents, here_pane=data.here, toggle_later=data.toggle_later, summarize=data.summary,
-                     scopes=views.opener_scopes(*data.opener))
+                     toggle_pin=data.toggle_pin, scopes=views.opener_scopes(*data.opener))
     if choice is not None:
         print(f"would jump to {choice.location} ({choice.title})")
     return 0
@@ -331,6 +348,10 @@ def main(argv=None):
     p = sub.add_parser("later", help="toggle the later flag on the agent in a pane")
     p.add_argument("--pane", required=True)
     p.set_defaults(func=cmd_later)
+
+    p = sub.add_parser("pin", help="pin or unpin the agent in a pane (top of the picker)")
+    p.add_argument("--pane", required=True)
+    p.set_defaults(func=cmd_pin)
 
     p = sub.add_parser("last", help="jump to the agent pane you were on before (for key bindings)")
     p.add_argument("--client", help="#{client_tty} of the client to switch")

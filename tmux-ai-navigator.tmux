@@ -3,6 +3,7 @@
 # and the notification watcher. Options (set them before TPM / this file runs):
 #   set -g @ainav-key 'a'          # prefix key that opens/closes the picker (default: a)
 #   set -g @ainav-later-key 'u'    # prefix key that toggles "later" on the current pane's agent
+#   set -g @ainav-pin-key 'P'      # prefix key that pins the current pane's agent to the top
 #   set -g @ainav-last-key 'A'     # prefix key that jumps to the agent pane you were on before
 #   set -g @ainav-popup 'on'       # tmux 3.2+: open in a popup (on) or a temporary window (off)
 #   set -g @ainav-popup-width '90%'
@@ -54,6 +55,7 @@ else
   bind_prefix @ainav-key a run-shell -b "'$BIN' open --client '#{client_tty}' --pane '#{pane_id}'"
 fi
 bind_prefix @ainav-later-key u run-shell -b "'$BIN' later --pane '#{pane_id}'"
+bind_prefix @ainav-pin-key P run-shell -b "'$BIN' pin --pane '#{pane_id}'"
 bind_prefix @ainav-last-key A run-shell -b "'$BIN' last --client '#{client_tty}' --pane '#{pane_id}'"
 
 # "done" = finished since you last looked: record which panes are on screen whenever that
