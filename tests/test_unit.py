@@ -10,10 +10,10 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from tmux_ai_navigator import agents, claude, codex, extras, notify, proc, state, transcript  # noqa: E402
+from tmux_ai_navigator import agents, claude, codex, extras, markdown, notify, proc, state, transcript, views  # noqa: E402
 from tmux_ai_navigator.agents import Agent, arrange, clean_title, fmt_age, map_to_panes, pick_title, sort_agents  # noqa: E402
 from tmux_ai_navigator.tmux import Pane  # noqa: E402
-from tmux_ai_navigator.ui import build_items, fit, matches, width  # noqa: E402
+from tmux_ai_navigator.ui import Picker, build_items, fit, fit_left, matches, width  # noqa: E402
 
 
 def write_stat(root, pid, ppid, start, comm="claude"):
@@ -233,9 +233,10 @@ class ExtrasTests(unittest.TestCase):
 
 def ag(name, status="idle", since=0.0, session="s", index=1, **kw):
     kw.setdefault("title", name)
-    return Agent(kind="claude", pid=hash(name) & 0xffff, session_id=name, name=name, cwd="/x",
+    kw.setdefault("cwd", "/x")
+    return Agent(kind="claude", pid=hash(name) & 0xffff, session_id=name, name=name,
                  status=status, since=since, tmux_session=session, window_index=index,
-                 pane_id="%" + name, **kw)
+                 pane_id="%" + name, tmux_session_id=kw.pop("sid", None), **kw)
 
 
 class SortSearchTests(unittest.TestCase):
@@ -264,20 +265,24 @@ class SortSearchTests(unittest.TestCase):
     def test_older_folds_unless_expanded_or_searching(self):
         now = self.NOW
         a = [ag("old", since=now - 3 * 86400), ag("new", since=now - 60)]
-        items, _ = build_items(a, "", 0, "priority", False, now)
+        items, _ = build_items(a, "", None, "priority", False, now)
         self.assertEqual([i[0] for i in items], ["header", "agent", "header", "more"])
-        items, _ = build_items(a, "", 0, "priority", True, now)
+        items, _ = build_items(a, "", None, "priority", True, now)
         self.assertEqual([i[0] for i in items], ["header", "agent", "header", "agent"])
-        items, _ = build_items(a, "old", 0, "priority", False, now)
+        items, _ = build_items(a, "old", None, "priority", False, now)
         self.assertEqual([i[0] for i in items], ["header", "agent"])
 
-    def test_filters(self):
+    def test_scopes(self):
         now = self.NOW
-        a = [ag("w", "waiting", since=now), ag("b", "busy", since=now), ag("i", "idle", since=now)]
-        names = lambda f: [i[1].name for i in build_items(a, "", f, "priority", True, now)[0] if i[0] == "agent"]
-        self.assertEqual(names(1), ["w"])
-        self.assertEqual(names(2), ["b"])
-        self.assertEqual(names(3), ["i"])
+        a = [ag("w", session="web", sid="$1", cwd="/r/web/src"), ag("i", session="infra", sid="$2", cwd="/r/infra"),
+             ag("l", session="infra", sid="$2", cwd="/r/web", session_ids=["$2", "$1"])]  # linked into web too
+        names = lambda sc: [i[1].name for i in build_items(a, "", sc, "priority", True, now)[0] if i[0] == "agent"]
+        roots = {"/r/web/src": "/r/web", "/r/web": "/r/web", "/r/infra": "/r/infra"}
+        with mock.patch.object(views, "project_root", side_effect=lambda p: roots.get(p, p)):
+            self.assertEqual(sorted(names(None)), ["i", "l", "w"])
+            self.assertEqual(sorted(names({"kind": "session", "value": "$1", "label": "web"})), ["l", "w"])
+            self.assertEqual(names({"kind": "session", "value": "$2", "label": "infra"}), ["i", "l"])
+            self.assertEqual(sorted(names({"kind": "project", "value": "/r/web", "label": "~/web"})), ["l", "w"])
 
     def test_matches_terms_and_smart_case(self):
         a = ag("Legacy video", branch="production")
@@ -296,6 +301,194 @@ class SortSearchTests(unittest.TestCase):
     def test_fit_wide_chars(self):
         self.assertEqual(width(fit("日本語テキスト", 7)), 7)
         self.assertEqual(fit("abc", 5, pad=True), "abc  ")
+
+
+class ViewTests(unittest.TestCase):
+    NOW = 1_000_000.0
+
+    def test_project_root(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "repo", ".git"))
+        open(os.path.join(root, "repo", ".git", "HEAD"), "w").close()
+        os.makedirs(os.path.join(root, "plain", ".git"))  # empty: not a repo
+        os.makedirs(os.path.join(root, "repo", "src", "deep"))
+        self.assertEqual(views.project_root(os.path.join(root, "repo", "src", "deep")), os.path.join(root, "repo"))
+        self.assertEqual(views.project_root(os.path.join(root, "plain")), os.path.join(root, "plain"))
+        self.assertEqual(views.project_root(os.path.join(root, "gone")), os.path.join(root, "gone"))
+        self.assertEqual(views.project_root(""), "")
+        os.makedirs(os.path.join(root, "repo", "wt2"))
+        with open(os.path.join(root, "repo", "wt2", ".git"), "w") as f:
+            f.write("gitdir: ../.git/worktrees/wt2\n")
+        self.assertEqual(views.project_root(os.path.join(root, "repo", "wt2")), os.path.join(root, "repo", "wt2"))
+        with mock.patch.dict(os.environ, {"HOME": root}):  # dotfiles repo at ~
+            with open(os.path.join(root, ".git"), "w") as f:
+                f.write("gitdir: x")
+            os.makedirs(os.path.join(root, "notes"))
+            self.assertEqual(views.project_root(os.path.join(root, "notes")), os.path.join(root, "notes"))
+
+    def test_opener_scopes(self):
+        with mock.patch.object(views, "project_root", side_effect=lambda p: p and "/x/api"):
+            got = views.opener_scopes("$3", "2api", "/x/api/src")
+        self.assertEqual([(s["kind"], s["value"], s["label"]) for s in got],
+                         [("all", "", "all"), ("session", "$3", "api"), ("project", "/x/api", "/x/api")])
+        self.assertEqual([s["kind"] for s in views.opener_scopes()], ["all"])
+
+    def test_next_key(self):
+        keys = [(1, "a"), (2, "b"), views.OLDER]
+        self.assertEqual(views.next_key(keys, (1, "a")), (2, "b"))
+        self.assertEqual(views.next_key(keys, (2, "b")), views.OLDER)
+        self.assertEqual(views.next_key(keys[:2], (2, "b")), (1, "a"))
+        self.assertIsNone(views.next_key([(1, "a")], (1, "a")))
+        self.assertIsNone(views.next_key(keys, (9, "z")))
+
+    def test_back_round_trip_through_json(self):
+        scope = {"kind": "session", "value": "$1", "label": "web"}
+        for nxt in [(7, "sess-7"), views.OLDER, None]:
+            d = {}
+            views.save_back(d, 42, views.snapshot(scope, "auth", "project", True, nxt, now=self.NOW))
+            d = json.loads(json.dumps(d))
+            got = views.load_back(d, 42, 600, now=self.NOW + 60)
+            self.assertEqual(got, {"scope": scope, "query": "auth", "mode": "project", "show_older": True,
+                                   "next": nxt})
+            self.assertIn("seen", d["servers"]["42"])  # a usable server record for the hooks
+
+    def test_back_expires_and_is_per_server(self):
+        d = {}
+        views.save_back(d, 42, views.snapshot(views.ALL, "", "priority", False, None, now=self.NOW))
+        self.assertIsNotNone(views.load_back(d, 42, 600, now=self.NOW + 599))
+        self.assertIsNone(views.load_back(d, 42, 600, now=self.NOW + 601))
+        self.assertIsNone(views.load_back(d, 42, 600, now=self.NOW - 5))  # clock went back
+        self.assertIsNone(views.load_back(d, 42, 0, now=self.NOW))       # resume off
+        self.assertIsNone(views.load_back(d, 43, 600, now=self.NOW))
+
+    def test_back_rejects_malformed(self):
+        good = views.snapshot(views.ALL, "q", "priority", False, (1, "a"), now=self.NOW)
+        bad = [None, [], {}, dict(good, saved_at="x"), dict(good, saved_at=float("nan")),
+               dict(good, scope={"kind": "bogus", "value": "", "label": ""}), dict(good, scope="all"),
+               dict(good, query=5), dict(good, mode="tree")]
+        for v in bad:
+            self.assertIsNone(views.load_back({"servers": {"1": {"back": v}}}, 1, 600, now=self.NOW), v)
+        self.assertIsNone(views.load_back({"servers": {"1": "junk"}}, 1, 600, now=self.NOW))
+        odd = dict(good, next={"agent": ["1", 2]}, show_older="yes")
+        got = views.load_back({"servers": {"1": {"back": odd}}}, 1, 600, now=self.NOW)
+        self.assertEqual((got["next"], got["show_older"]), (None, False))
+
+    def test_previous_pane_bounces(self):
+        d = {}
+        for t, pane in enumerate(["%1", "%9", "%2"]):  # agent %1, a plain shell %9, agent %2
+            state.record_focus(d, 7, {"/dev/pts/1": pane}, now=100 + t)
+        agents = {"%1", "%2", "%3"}
+        self.assertEqual(state.previous_pane(d, 7, "/dev/pts/1", "%2", agents), "%1")  # skips the shell
+        state.record_focus(d, 7, {"/dev/pts/1": "%1"}, now=200)                       # jumped back
+        self.assertEqual(state.previous_pane(d, 7, "/dev/pts/1", "%1", agents), "%2")  # and again
+        self.assertEqual(d["servers"]["7"]["recent"]["/dev/pts/1"]["panes"], ["%1", "%2", "%9"])
+        self.assertIsNone(state.previous_pane(d, 7, "/dev/pts/1", "%1", {"%1"}))
+        # a client with no history of its own (a new terminal) borrows the others'
+        self.assertEqual(state.previous_pane(d, 7, "/dev/pts/5", "%3", agents), "%1")
+        self.assertFalse(state.focus_changed(d, 7, {"/dev/pts/1": "%1"}))
+        self.assertTrue(state.focus_changed(d, 7, {"/dev/pts/1": "%2"}))
+        self.assertTrue(state.focus_changed(d, 7, {"/dev/pts/2": "%2"}))
+
+    def test_recent_is_bounded(self):
+        d = {}
+        for i in range(40):
+            state.record_focus(d, 7, {f"/dev/pts/{i % 20}": f"%{i}"}, now=i)
+        r = d["servers"]["7"]["recent"]
+        self.assertEqual(len(r), state.RECENT_CLIENTS)
+        self.assertNotIn("/dev/pts/0", r)  # least recently used terminals go first
+        self.assertTrue(all(len(e["panes"]) <= state.RECENT_PANES for e in r.values()))
+        bad = {"servers": {"7": {"recent": {"x": "junk", "y": {"panes": [3, "%1"]}}}}}
+        self.assertEqual(state.previous_pane(bad, 7, "x", "%0", {"%1"}), "%1")
+        state.record_focus(bad, 7, {"y": "%2"})
+        self.assertEqual(bad["servers"]["7"]["recent"]["y"]["panes"], ["%2", "%1"])
+
+    def test_worth_restoring(self):
+        plain = {"scope": dict(views.ALL), "query": "", "mode": "priority", "show_older": False, "next": None}
+        self.assertFalse(views.worth_restoring(plain))
+        self.assertFalse(views.worth_restoring(None))
+        for change in ({"query": "a"}, {"show_older": True}, {"mode": "project"},
+                       {"scope": {"kind": "session", "value": "$1", "label": "web"}}):
+            self.assertTrue(views.worth_restoring(dict(plain, **change)), change)
+
+    def test_resume_window(self):
+        self.assertEqual(views.resume_window(None), 600)
+        self.assertEqual(views.resume_window("5"), 300)
+        self.assertEqual(views.resume_window("0"), 0)
+        for v in ("-1", "inf", "nan", "soon"):
+            self.assertEqual(views.resume_window(v), 600)
+
+    def test_picker_tabs(self):
+        scopes = [dict(views.ALL), {"kind": "session", "value": "$1", "label": "web"},
+                  {"kind": "project", "value": "/r/api", "label": "~/api"}]
+        p = Picker(list, scopes=scopes, default_tab="session")
+        self.assertEqual(p.tab.scope["kind"], "session")
+        p.query = "x"
+        p.tab_idx = 0
+        self.assertEqual(p.query, "")  # each tab has its own search
+        p.tab_idx = 1
+        self.assertEqual(p.query, "x")
+        self.assertEqual(Picker(list, scopes=scopes, default_tab="nope").tab.scope["kind"], "all")
+        back = {"scope": scopes[1], "query": "auth", "mode": "project", "show_older": True, "next": (5, "s")}
+        p = Picker(list, scopes=scopes, back=back)
+        self.assertEqual((p.tab_idx, p.tab.back, p.query, p.sel_key, p.show_older, p.mode_idx),
+                         (0, True, "auth", (5, "s"), True, 1))
+        self.assertEqual(p.tab.label(), '↺ back · web · "auth"')
+        older = dict(back, scope=dict(views.ALL), query="")
+        self.assertEqual(Picker(list, scopes=scopes, back=older).tab.label(), "↺ back · older")
+        self.assertEqual(Picker(list, scopes=scopes, back=dict(older, show_older=False, query="x")).tab.label(),
+                         '↺ back · "x"')
+        self.assertEqual(len(p.tabs), 4)
+
+    def test_fit_left(self):
+        self.assertEqual(fit_left("~/code/api", 20), "~/code/api")
+        self.assertEqual(fit_left("~/code/very-long-project", 10), "…g-project")
+
+
+class MarkdownTests(unittest.TestCase):
+    def text(self, md, w):
+        lines = [markdown.plain_text(l) for l in markdown.render(md, w)]
+        for l in lines:
+            self.assertLessEqual(markdown.width(l), w, l)
+        return lines
+
+    def test_inline(self):
+        segs = markdown.inline("a **bold** and `code` and *em* and [link](http://x) and snake_case_name")
+        self.assertEqual(segs, [("a ", "text"), ("bold", "bold"), (" and ", "text"), ("code", "code"),
+                                (" and ", "text"), ("em", "em"), (" and ", "text"), ("link", "text"),
+                                (" and snake_case_name", "text")])
+
+    def test_table_aligns_and_wraps_cells(self):
+        md = "| Name | Notes |\n|---|:--|\n| a | short |\n| longer name | " + "word " * 12 + "|"
+        lines = self.text(md, 40)
+        self.assertEqual(lines[0], "Name        │ Notes")
+        self.assertTrue(lines[1].startswith("────────────┼─"))
+        self.assertTrue(lines[2].startswith("a           │ short"))
+        self.assertTrue(lines[3].startswith("────────────┼─"))     # rows wrap, so they're ruled
+        self.assertTrue(lines[4].startswith("longer name │ word"))
+        self.assertTrue(lines[5].startswith("            │ word"))  # wrapped inside its cell
+
+    def test_table_too_wide_becomes_records(self):
+        md = "| " + " | ".join(f"column {i}" for i in range(6)) + " |\n|" + "---|" * 6 + "\n| " + \
+             " | ".join(f"value {i}" for i in range(6)) + " |"
+        lines = self.text(md, 30)
+        self.assertEqual(lines[:2], ["column 0: value 0", "column 1: value 1"])
+
+    def test_blocks(self):
+        md = "# Title\n\n- one\n  - nested item that wraps around\n2. two\n- [x] done\n> quote\n---\n```\ncode line\n```\n\n\n\nend"
+        self.assertEqual(self.text(md, 20), ["Title", "", "• one", "  • nested item that", "    wraps around",
+                                              "2. two", "☑ done", "│ quote", "─" * 20, "  code line", "", "end"])
+
+    def test_long_words_and_wide_chars(self):
+        for l in self.text("x" * 50 + " 日本語のテキスト" * 5, 12):
+            self.assertTrue(l)
+
+    def test_search_includes_preview_text(self):
+        a = ag("x")
+        items, _ = build_items([a], "redis", None, "priority", True, 0,
+                               text=lambda _: "uses Redis for limits")
+        self.assertEqual(len([i for i in items if i[0] == "agent"]), 1)
+        items, _ = build_items([a], "redis", None, "priority", True, 0)
+        self.assertEqual(items, [])
 
 
 class TitleTests(unittest.TestCase):

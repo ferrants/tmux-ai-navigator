@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Tabs: `tab` now switches between all, the tmux session and the project (git repo) you
+  opened the picker from, each with its own search and cursor. The status filters it used to
+  cycle are gone; the sections already put waiting and working sessions first.
+- "↺ back": after a jump, the picker reopens (within `@ainav-resume` minutes, default 10) on
+  the view you left, with the cursor on the next row, if you'd searched, changed tab,
+  expanded "older" or grouped. `@ainav-default-tab` picks the tab to open on otherwise.
+- Search also matches the preview's last prompt and reply, highlighted in the preview.
+- The preview renders markdown: tables, lists, headings, bold, inline code, code blocks,
+  quotes and links.
+- `prefix A` (`@ainav-last-key`): back to the agent pane you were on before, across sessions
+  and windows; press again to bounce between the two. Marked `↩` in the picker.
 - Codex CLI sessions: every Codex TUI in a tmux pane is listed with Claude's, with status
   (working, waiting for an approval, done), title, timing, preview, later flags and
   notifications. No setup: status is read from the pane title Codex keeps, the conversation

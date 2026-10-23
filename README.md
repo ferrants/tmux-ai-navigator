@@ -9,7 +9,7 @@ you last looked**, and ones you flagged for **later**. Then come sessions that a
 active today, and older ones. A preview shows each session's last prompt and reply. You can
 search the list and press Enter to jump to that pane.
 
-![The picker with made-up sessions: moving through the list, searching, filtering, grouping by project and flagging for later](docs/demo.gif)
+![The picker with made-up sessions: moving through the list, searching the previews, switching tabs, grouping by project and flagging for later](docs/demo.gif)
 
 Try it without any sessions of your own: `bin/tmux-ai-nav demo`.
 
@@ -58,18 +58,21 @@ with TPM, or the `run-shell` line for a manual install.
 ```tmux
 set -g @ainav-key 'a'                # prefix key that opens/closes the picker (default a)
 set -g @ainav-later-key 'u'          # prefix key: flag the current pane's session for later (default u)
+set -g @ainav-last-key 'A'           # prefix key: back to the agent you were on before (default A)
 set -g @ainav-popup 'on'             # tmux 3.2+: popup (on) or temporary window (off)
 set -g @ainav-popup-width '90%'
 set -g @ainav-popup-height '85%'
 set -g @ainav-extras 'command'       # extras command, see below (default none)
 set -g @ainav-extras-interval '5'    # seconds between extras runs (default 5)
 set -g @ainav-notify 'tmux'          # notifications, see below (default tmux)
+set -g @ainav-default-tab 'all'      # tab to open on: all, session or project (default all)
+set -g @ainav-resume '10'            # minutes the "↺ back" view is offered after a jump; 0 = off
 ```
 
 The plugin doesn't take a key that's already bound. Many configs use `prefix a` for
 `send-prefix`, for example, and URL plugins often use `prefix u`. If a default key is taken,
 the plugin skips it and says so in the status line; set `@ainav-key` or `@ainav-later-key`
-to choose a key. A key you set explicitly is always bound.
+to choose a key (`@ainav-last-key` for `prefix A`). A key you set explicitly is always bound.
 
 ## Use
 
@@ -91,10 +94,10 @@ Codex sessions are marked `cx`.
 
 | key | |
 |---|---|
-| type | search window name, title, project, path, branch, status and extras (all words must match; ignores case unless the search has a capital) |
+| type | search window name, title, project, path, branch, status, extras and the preview's last prompt and reply (all words must match; ignores case unless the search has a capital; matches are highlighted in the preview) |
 | ↑ ↓ / ctrl-p ctrl-n, PgUp PgDn | move |
 | enter | jump to that agent's pane (or expand "older") |
-| tab / shift-tab | filter: all, needs you, working, idle |
+| tab / shift-tab | next / previous tab (see below) |
 | ctrl-s | group: priority sections, or by project |
 | ctrl-l | flag or unflag the selected session for later |
 | ctrl-u / ctrl-w | clear the search / delete the last word |
@@ -103,8 +106,36 @@ Codex sessions are marked `cx`.
 `prefix u` flags the session in the current pane for later without opening the picker. A
 flag clears once you prompt that session again.
 
+`prefix A` jumps back to the agent you were on before, across tmux sessions and windows, and
+pressing it again bounces between the two, like `cd -`. Only agent panes count, so a shell you
+looked at in between is skipped. Each terminal (tmux client) has its own history; in the
+picker, that agent is marked `↩`. tmux's own `prefix l` and `prefix L` still work, but they
+remember the last window and the last session separately.
+
+### Tabs
+
+The tabs across the top narrow the list to where you opened the picker from:
+
+- **all**: every agent.
+- **the tmux session** (shown by name, e.g. `web`): agents with a pane in that session.
+- **the project** (e.g. `~/code/api`): agents whose folder is in the same git repo as the
+  pane you opened from (or the same folder, outside git). This includes a project spread over
+  several tmux sessions. `ctrl-s` grouping is different: it groups by tmux session name.
+
+Each tab keeps its own search and cursor while the picker is open.
+
+**↺ back** appears first when you jumped from the picker in the last 10 minutes
+(`@ainav-resume`) from a view you'd set up: a search, a session or project tab, "older"
+expanded, or grouping by project. It's the view you left: the same tab (still the session or project it showed
+then, even if you've moved), search, grouping and expanded "older", with the cursor on the row
+after the one you opened. The picker opens on it, so going through old sessions one by one is
+`prefix a`, `enter`, repeat. `tab` leaves it for a fresh view, `shift-tab` goes back. The view is
+kept in the state file with the seen times, one per tmux server.
+
 The list refreshes every second. On wide terminals the preview sits on the right; on
-narrow ones it goes underneath.
+narrow ones it goes underneath. Replies are shown with their markdown formatting: tables
+(cells wrap to fit; too many columns become "header: value" lines), lists, headings, bold,
+code and quotes.
 
 Colors follow Tokyo Night on 256-color terminals. Inside tmux, a plain `screen`/`tmux`
 TERM is upgraded to its `-256color` variant for the picker, and tmux maps colors down for

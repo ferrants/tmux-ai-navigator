@@ -3,6 +3,7 @@
 # and the notification watcher. Options (set them before TPM / this file runs):
 #   set -g @ainav-key 'a'          # prefix key that opens/closes the picker (default: a)
 #   set -g @ainav-later-key 'u'    # prefix key that toggles "later" on the current pane's agent
+#   set -g @ainav-last-key 'A'     # prefix key that jumps to the agent pane you were on before
 #   set -g @ainav-popup 'on'       # tmux 3.2+: open in a popup (on) or a temporary window (off)
 #   set -g @ainav-popup-width '90%'
 #   set -g @ainav-popup-height '85%'
@@ -10,6 +11,8 @@
 #   set -g @ainav-extras-interval 5
 #   set -g @ainav-notify 'tmux,system'  # notifications: tmux, system, terminal, bell, or off
 #   set -g @ainav-notify-sound 'soft'   # soft, system, off, or a sound file; @ainav-notify-volume 0-100
+#   set -g @ainav-default-tab 'all'     # picker tab to open on: all, session or project
+#   set -g @ainav-resume '10'           # minutes the picker reopens on the "back" view after a jump; 0 = off
 # Manual install: run-shell /path/to/tmux-ai-navigator/tmux-ai-navigator.tmux
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$DIR/bin/tmux-ai-nav"
@@ -51,6 +54,7 @@ else
   bind_prefix @ainav-key a run-shell -b "'$BIN' open --client '#{client_tty}' --pane '#{pane_id}'"
 fi
 bind_prefix @ainav-later-key u run-shell -b "'$BIN' later --pane '#{pane_id}'"
+bind_prefix @ainav-last-key A run-shell -b "'$BIN' last --client '#{client_tty}' --pane '#{pane_id}'"
 
 # "done" = finished since you last looked: record which panes are on screen whenever that
 # changes. Fixed array index so re-sourcing the config replaces instead of duplicating.

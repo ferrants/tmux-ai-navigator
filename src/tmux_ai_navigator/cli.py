@@ -5,6 +5,7 @@
   tmux-ai-nav list [--json] [--all]            print the agents found
   tmux-ai-nav seen                             record which panes are on screen (tmux hooks)
   tmux-ai-nav later --pane PANE                toggle the "later" flag on the agent in PANE
+  tmux-ai-nav last --client TTY --pane PANE    jump to the agent pane you were on before this one
   tmux-ai-nav watch [--start|--stop]           notify when agents finish or need you
   tmux-ai-nav watch --test done|waiting        send a sample notification with your settings
   tmux-ai-nav demo                             run the picker on made-up sessions
@@ -19,6 +20,7 @@ import sys
 import time
 from dataclasses import asdict
 
+from . import state, views
 from .agents import Discovery, fmt_age, sort_agents
 from .extras import Extras
 from .state import State
@@ -55,6 +57,14 @@ def discovery(args, tmux=None, with_extras=False):
     return Discovery(tmux, args.sessions_dir, state_store=State(args.state_dir), extras=extras)
 
 
+def tmux_options(tmux, names):
+    try:
+        got = tmux.options(names)
+    except Exception:
+        got = {}
+    return {n: (got.get(n) or "").strip() for n in names}
+
+
 def tmux_option(tmux, name):
     try:
         return tmux.options([name])[name].strip()
@@ -80,7 +90,7 @@ def self_command():
             f"import sys; sys.path.insert(0, {src!r}); from tmux_ai_navigator.cli import main; sys.exit(main())"]
 
 
-def ui_command(args, session_id, pane):
+def ui_command(args, session_id, pane, session_name="", cwd=""):
     cmd = self_command() + server_flags(args)
     if args.sessions_dir:
         cmd += ["--sessions-dir", args.sessions_dir]
@@ -89,6 +99,10 @@ def ui_command(args, session_id, pane):
     if args.extras is not None:
         cmd += ["--extras", args.extras]
     cmd += ["ui", "--here", pane, "--session", session_id]
+    if session_name:
+        cmd += ["--session-name", session_name]
+    if cwd:
+        cmd += ["--cwd", cwd]
     if args.client:
         cmd += ["--client", args.client]
     return cmd
@@ -99,13 +113,15 @@ def cmd_open(args):
     or in a temporary window, which pressing the key again inside closes."""
     tmux = make_tmux(args)
     pane = args.pane
-    fmt = SEP.join(["#{session_id}", "#{window_id}", f"#{{{WINDOW_FLAG}}}", "#{pane_id}"])
+    fmt = SEP.join(["#{session_id}", "#{window_id}", f"#{{{WINDOW_FLAG}}}", "#{pane_id}", "#{session_name}",
+                    "#{pane_current_path}"])
     # Prefer the client's view: a pane in a window linked into several sessions doesn't say
     # which session the user is looking at.
     info = tmux.client_format(args.client, fmt).strip() if args.client else ""
     if not info:
         info = tmux.run("display", "-p", "-t", pane, fmt).strip()
-    session_id, window_id, is_picker, pane = (info.split(SEP) + ["", "", "", pane])[:4]
+    session_id, window_id, is_picker, pane, session_name, cwd = (info.split(SEP) + ["", "", "", pane, "", ""])[:6]
+    opener = (session_name, cwd)  # where the picker opens from: its "session" and "project" tabs
     if args.popup:
         # display-popup doesn't expand formats in its command, hence this detour through
         # run-shell and us; it returns when the popup closes, so don't wait for it
@@ -113,7 +129,7 @@ def cmd_open(args):
         popup = tmux.base + ["display-popup", "-E", "-w", width or "90%", "-h", height or "85%"]
         if args.client:
             popup += ["-c", args.client]
-        subprocess.Popen(popup + [" ".join(shlex.quote(c) for c in ui_command(args, session_id, pane))],
+        subprocess.Popen(popup + [" ".join(shlex.quote(c) for c in ui_command(args, session_id, pane, *opener))],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
         return 0
@@ -129,7 +145,7 @@ def cmd_open(args):
         wid, _, flag = line.partition(" ")
         if flag == "1":
             tmux.run("kill-window", "-t", wid, check=False)
-    cmd = ui_command(args, session_id, pane) + ["--origin", window_id]
+    cmd = ui_command(args, session_id, pane, *opener) + ["--origin", window_id]
     new = tmux.run("new-window", "-t", f"{session_id}:", "-n", "agents", "-P", "-F", "#{window_id}",
                    " ".join(shlex.quote(c) for c in cmd)).strip()
     tmux.run("set", "-w", "-t", new, WINDOW_FLAG, "1", check=False)
@@ -144,11 +160,25 @@ def cmd_ui(args):
     locale.setlocale(locale.LC_ALL, "")
     tmux = make_tmux(args)
     disc = discovery(args, tmux, with_extras=True)
-    current = args.session
-    if not current and args.here:
-        current = tmux.run("display", "-p", "-t", args.here, "#{session_id}", check=False).strip() or None
-    choice = pick(lambda: disc.agents(current_session=current), here_pane=args.here,
-                  toggle_later=disc.toggle_later, warning=lambda: disc.extras.error)
+    current, name, cwd = args.session, args.session_name, args.cwd
+    if args.here and not (current and name and cwd):
+        info = tmux.run("display", "-p", "-t", args.here,
+                        SEP.join(["#{session_id}", "#{session_name}", "#{pane_current_path}"]), check=False)
+        found = (info.strip().split(SEP) + ["", "", ""])[:3]
+        current, name, cwd = current or found[0] or None, name or found[1], cwd or found[2]
+    opts = tmux_options(tmux, ["@ainav-resume", "@ainav-default-tab"])
+    back = None
+    try:
+        back = views.load_back(disc.state.read(), disc.server(), views.resume_window(opts["@ainav-resume"] or None))
+        back = back if views.worth_restoring(back) else None
+    except Exception:  # no server or unreadable state: just open fresh
+        pass
+    choice, view = pick(lambda: disc.agents(current_session=current), here_pane=args.here,
+                        toggle_later=disc.toggle_later, warning=lambda: disc.extras.error,
+                        previous=lambda agents: getattr(previous_agent(disc, args.client, args.here, agents),
+                                                        "pane_id", None),
+                        scopes=views.opener_scopes(current, name, cwd), back=back,
+                        default_tab=opts["@ainav-default-tab"] or "all")
     if choice is None:
         if args.origin:
             tmux.run("select-window", "-t", args.origin, check=False)
@@ -164,12 +194,49 @@ def cmd_ui(args):
             tmux.run("select-window", "-t", args.origin, check=False)
         return 1
     seen_now(disc, extra=[choice.pane_id])
+    if view:
+        with disc.state.update() as d:
+            views.save_back(d, disc.server(), view)
     return 0
 
 
 def seen_now(disc, extra=(), at=None):
     visible = {p.pane_id for p in disc.tmux.panes() if p.on_screen}
-    disc.update_seen(visible, extra=extra, at=at)
+    disc.update_seen(visible, extra=extra, at=at, focus=disc.tmux.client_panes())
+
+
+def previous_agent(disc, client, current, agents):
+    """The agent whose pane `client` looked at before `current`, or None."""
+    by_pane = {a.pane_id: a for a in agents if a.pane_id}
+    try:
+        pane = state.previous_pane(disc.state.read(), disc.server(), client, current, by_pane)
+    except Exception:
+        return None
+    return by_pane.get(pane)
+
+
+def cmd_last(args):
+    """prefix A: back to the agent pane you were on before, across sessions and windows;
+    pressing it again bounces between the two."""
+    tmux = make_tmux(args)
+    disc = discovery(args, tmux)
+    client = args.client if args.client in tmux.clients() else None
+    current = tmux.client_format(client, "#{session_id}").strip() if client else None
+    target = previous_agent(disc, client, args.pane, disc.agents(current_session=current or None, record_seen=False))
+    if not target:
+        tmux.run("display-message", "tmux-ai-nav: no previous agent pane yet", check=False)
+        return 0
+    try:
+        tmux.jump(client, target.tmux_session_id, target.window_id, target.pane_id)
+    except TmuxError as e:
+        tmux.run("display-message", f"tmux-ai-nav: can't jump to {target.title}: {e}", check=False)
+        return 0
+    if client:  # don't wait for the hooks: a quick second press should bounce back
+        with disc.state.update() as d:
+            state.record_focus(d, disc.server(), {client: args.pane})
+            state.record_focus(d, disc.server(), {client: target.pane_id})
+    seen_now(disc, extra=[target.pane_id])
+    return 0
 
 
 def cmd_seen(args):
@@ -235,7 +302,8 @@ def cmd_demo(args):
 
     locale.setlocale(locale.LC_ALL, "")
     data = demo.Demo()
-    choice = pick(data.agents, here_pane=data.here, toggle_later=data.toggle_later, summarize=data.summary)
+    choice, _ = pick(data.agents, here_pane=data.here, toggle_later=data.toggle_later, summarize=data.summary,
+                     scopes=views.opener_scopes(*data.opener))
     if choice is not None:
         print(f"would jump to {choice.location} ({choice.title})")
     return 0
@@ -264,6 +332,11 @@ def main(argv=None):
     p.add_argument("--pane", required=True)
     p.set_defaults(func=cmd_later)
 
+    p = sub.add_parser("last", help="jump to the agent pane you were on before (for key bindings)")
+    p.add_argument("--client", help="#{client_tty} of the client to switch")
+    p.add_argument("--pane", required=True, help="#{pane_id} the key was pressed in")
+    p.set_defaults(func=cmd_last)
+
     p = sub.add_parser("open", help="toggle the picker window (for key bindings)")
     p.add_argument("--client", help="#{client_tty} of the client to switch")
     p.add_argument("--pane", required=True, help="#{pane_id} the key was pressed in")
@@ -274,7 +347,9 @@ def main(argv=None):
     p.add_argument("--client")
     p.add_argument("--origin", help="window to return to on quit")
     p.add_argument("--here", help="pane the picker was opened from")
-    p.add_argument("--session", help="tmux session the picker was opened from")
+    p.add_argument("--session", help="tmux session (id) the picker was opened from")
+    p.add_argument("--session-name", help="its name, for the session tab")
+    p.add_argument("--cwd", help="folder of the pane it was opened from, for the project tab")
     p.set_defaults(func=cmd_ui)
 
     p = sub.add_parser("watch", help="notify when agents finish or need you (runs until tmux exits)")
@@ -289,7 +364,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if not getattr(args, "func", None):
         args.cmd = "ui"
-        args.client = args.origin = args.here = args.session = None
+        args.client = args.origin = args.here = args.session = args.session_name = args.cwd = None
         args.func = cmd_ui
     try:
         return args.func(args)

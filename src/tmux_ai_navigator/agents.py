@@ -34,6 +34,7 @@ class Agent:
     window_name: Optional[str] = None
     pane_title: str = ""
     other_sessions: List[str] = field(default_factory=list)  # linked windows
+    session_ids: List[str] = field(default_factory=list)     # every tmux session the pane is in
     branch: str = ""
     # from the optional extras command (see extras.py)
     badge: str = ""
@@ -291,6 +292,7 @@ class Discovery:
                 if a.kind == "claude":  # Codex's title is its status line, handled in codex.py
                     a.pane_title = p.pane_title
                 a.other_sessions = [h.session_name for h in hits[1:]]
+                a.session_ids = [h.session_id for h in hits]
                 a.on_screen = a.pane_id in visible
             elif not include_untracked:
                 continue
@@ -307,14 +309,18 @@ class Discovery:
         transcript.save_title_cache()
         return out
 
-    def update_seen(self, visible, extra=(), at=None):
-        """Record panes on screen now (and ones that just left the screen) as seen at `at`."""
+    def update_seen(self, visible, extra=(), at=None, focus=None):
+        """Record panes on screen now (and ones that just left the screen) as seen at `at`,
+        and each client's current pane (focus: {tty: pane}) in its history."""
         st = self.state.read()
         known = st["servers"].get(str(self.server()))
-        if known and set(known.get("visible", [])) == visible and not extra:
+        if known and set(known.get("visible", [])) == visible and not extra \
+                and not state.focus_changed(st, self.server(), focus):
             return st
         with self.state.update() as st:
             state.mark_visible(st, self.server(), visible, now=at, extra_seen=extra, alive=server_alive)
+            if focus:
+                state.record_focus(st, self.server(), focus, now=at)
         return st
 
     def toggle_later(self, agent):

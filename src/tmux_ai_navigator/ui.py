@@ -7,24 +7,19 @@ import time
 import unicodedata
 import zlib
 
-from . import transcript
+from . import markdown, transcript, views
 from .agents import arrange, fmt_age
+from .views import OLDER
 
-FILTERS = [
-    ("all", lambda a: True),
-    ("needs you", lambda a: a.section() == "needs"),
-    ("working", lambda a: a.status == "busy"),
-    ("idle", lambda a: a.status == "idle" and not a.done),
-]
-MODES = ["priority", "project"]
+MODES = list(views.MODES)
+ITALIC = getattr(curses, "A_ITALIC", 0)
 KIND_MARKS = {"codex": "cx"}  # shown on rows of agents other than Claude Code
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TICK_MS = 250
 REFRESH_S = 1.0
-OLDER = ("more", "older")
 BADGE_COLORS = {"warn": "err", "info": "accent", "dim": "dim"}
 
-HELP = "enter jump · type to search · ↑↓ move · ⇥ filter · ^s group · ^l later · esc clear/quit"
+HELP = "enter jump · type to search · ↑↓ move · ⇥ tabs · ^s group · ^l later · esc clear/quit"
 
 # Tokyo Night (night), as the nearest xterm-256 colors; -1/None = terminal default
 TOKYO_NIGHT = {
@@ -113,12 +108,17 @@ def wrap(text, w, limit):
 
 # ---- model ---------------------------------------------------------------------------------
 
-def matches(agent, query):
-    terms = query.split()
+def search_terms(query):
+    """(terms, case sensitive?): all words must match; a capital makes it case sensitive."""
+    return query.split(), any(c.isupper() for c in query)
+
+
+def matches(agent, query, extra=""):
+    """extra: more text to search, e.g. the preview's last prompt and reply."""
+    terms, smart = search_terms(query)
     if not terms:
         return True
-    smart = any(c.isupper() for c in query)
-    hay = agent.search_text()
+    hay = agent.search_text() + (" " + extra if extra else "")
     if not smart:
         hay, terms = hay.lower(), [t.lower() for t in terms]
     return all(t in hay for t in terms)
@@ -128,13 +128,27 @@ def agent_key(a):
     return (a.pid, a.session_id)
 
 
-def build_items(agents, query, filter_idx, mode, show_older, now=None):
+def fit_left(s, w):
+    """Like fit, but keeps the end: "…/code/api"."""
+    if width(s) <= w:
+        return s
+    out, n = [], 0
+    for c in reversed(s):
+        if n + cell_width(c) > w - 1:
+            break
+        out.append(c)
+        n += cell_width(c)
+    return "…" + "".join(reversed(out))
+
+
+def build_items(agents, query, scope, mode, show_older, now=None, text=None):
     """Display items: ("header", key, title, n) | ("agent", agent) | ("more", n).
 
-    The OLDER section folds into one "more" row unless expanded or searching.
+    The OLDER section folds into one "more" row unless expanded or searching. text(agent):
+    more searchable text (the preview), only fetched while searching.
     """
-    pred = FILTERS[filter_idx][1]
-    shown = [a for a in agents if pred(a) and matches(a, query)]
+    shown = [a for a in agents if views.in_scope(a, scope)
+             and matches(a, query, text(a) if text and query.strip() else "")]
     items = []
     for key, title, group in arrange(shown, mode, now):
         items.append(("header", key, title, len(group)))
@@ -149,8 +163,42 @@ def item_key(it):
     return agent_key(it[1]) if it[0] == "agent" else OLDER if it[0] == "more" else None
 
 
+class Tab:
+    """One scope, with its own search, cursor and OLDER folding while the picker is open."""
+
+    def __init__(self, scope, back=False, query="", show_older=False, sel_key=None):
+        self.scope, self.back = scope, back
+        self.query, self.show_older, self.sel_key, self.top = query, show_older, sel_key, 0
+
+    def label(self, w=22):
+        if not self.back:
+            s = self.scope
+            return fit_left(s["label"], w) if s["kind"] == "project" else fit(s["label"], w)
+        # name only what it restores: "↺ back · web · "auth"", "↺ back · older"
+        parts = []
+        if self.scope["kind"] == "project":
+            parts.append(fit_left(self.scope["label"], 16))
+        elif self.scope["kind"] == "session":
+            parts.append(fit(self.scope["label"], 16))
+        if self.query:
+            parts.append(f'"{fit(self.query, 12)}"')
+        elif self.show_older and not parts:
+            parts.append("older")
+        return " · ".join(["↺ back"] + parts)
+
+
+def tab_property(name):
+    return property(lambda self: getattr(self.tab, name), lambda self, v: setattr(self.tab, name, v))
+
+
 class Picker:
-    def __init__(self, load, here_pane=None, toggle_later=None, summarize=None, warning=None):
+    query = tab_property("query")
+    sel_key = tab_property("sel_key")
+    top = tab_property("top")
+    show_older = tab_property("show_older")
+
+    def __init__(self, load, here_pane=None, toggle_later=None, summarize=None, warning=None,
+                 scopes=None, back=None, default_tab="all", previous=None):
         self.load = load                # () -> list[Agent]
         self.toggle_later_cb = toggle_later
         self.summarize = summarize or transcript.summary  # session id -> {"user", "assistant"}
@@ -158,18 +206,37 @@ class Picker:
         self.here = here_pane
         self.agents = []
         self.shown = []
-        self.query = ""
-        self.filter_idx = 0
         self.mode_idx = 0
-        self.show_older = False
-        self.sel_key = None
-        self.top = 0
+        self.tabs = [Tab(s) for s in (scopes or [dict(views.ALL)])]
+        kinds = [t.scope["kind"] for t in self.tabs]
+        self.tab_idx = kinds.index(default_tab) if default_tab in kinds else 0
+        if back:  # a recent view to come back to: first tab, and where we open
+            self.tabs.insert(0, Tab(back["scope"], True, back["query"], back["show_older"], back["next"]))
+            self.mode_idx = MODES.index(back["mode"])
+            self.tab_idx = 0
+        self.view = None                # what to save as the back view after a jump
+        self.previous_cb = previous     # agents -> pane of the agent you were on before, marked ↩
+        self.previous = None
         self.error = ""
         self.flash = ""
+
+    @property
+    def tab(self):
+        return self.tabs[self.tab_idx]
+
+    def preview_text(self, a):
+        """The preview's prompt and reply, so search finds what the right pane shows."""
+        try:
+            s = self.summarize(a.session_id) or {}
+        except Exception:
+            return ""
+        return f"{s.get('user', '')} {s.get('assistant', '')}"
 
     def refresh(self):
         try:
             self.agents = self.load()
+            if self.previous_cb and self.previous is None:
+                self.previous = self.previous_cb(self.agents) or ""
             self.error = (self.warning() if self.warning else "") or ""
         except Exception as e:  # keep the UI alive; show the problem in the status line
             self.error = f"refresh failed: {e}"
@@ -243,7 +310,8 @@ class Picker:
         badge = fit(clean(a.badge), 8)
         mark = KIND_MARKS.get(a.kind, "")
         right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0)
-        title = clean(a.title) + (" (here)" if a.pane_id and a.pane_id == self.here else "")
+        title = clean(a.title) + (" (here)" if a.pane_id and a.pane_id == self.here else
+                                  " ↩" if a.pane_id and a.pane_id == self.previous else "")
         bold = curses.A_BOLD if a.section(now) in ("needs", "working") else 0
         x = x0 + 3
         room = w - 4 - right_w - 2
@@ -265,21 +333,45 @@ class Picker:
         self.put(y, x, tag, self.tag_attr(a.tag, chosen))
         self.put(y, x + width(tag) + 1, age.rjust(5), c["dim"])
 
+    def draw_tabs(self, x, room):
+        """Tab bar from x within room columns; scrolls so the active tab stays visible."""
+        labels = [f" {fit(t.label(), max(4, room - 6))} " for t in self.tabs]
+        widths = [width(l) for l in labels]
+        first = 0
+        while first < self.tab_idx and sum(widths[first:self.tab_idx + 1]) + (self.tab_idx - first) + 2 > room:
+            first += 1
+        end = x + room
+        if first:
+            self.put(0, x, "‹", self.c["dim"])
+            x += 2
+        for i in range(first, len(self.tabs)):
+            if x + widths[i] > end - (2 if i < len(self.tabs) - 1 else 0):
+                self.put(0, min(x, end - 1), "›", self.c["dim"])
+                break
+            if i == self.tab_idx:
+                attr = self.cs["accent"] | curses.A_BOLD
+            else:
+                attr = self.c["prompt"] if self.tabs[i].back else self.c["dim"]
+            self.put(0, x, labels[i], attr)
+            x += widths[i] + 1
+
     def draw_header(self, w, counts):
         self.put(0, 1, "agents", self.c["head"] | curses.A_BOLD)
-        x = 10
+        right = MODES[self.mode_idx]
+        self.draw_tabs(9, w - 9 - width(right) - 3)
+        self.put(0, w - width(right) - 1, right, self.c["dim"])
+        parts = []
         for key, label, attr in (("needs", "need you", self.c["wait"] | curses.A_BOLD),
                                  ("working", "working", self.c["busy"]),
                                  ("today", "today", self.c["text"]), ("older", "older", self.c["dim"])):
-            n = counts.get(key, 0)
-            if not n:
-                continue
-            s = f"{n} {label}"
-            self.put(0, x, s, attr)
-            x += width(s) + 3
-        right = f"filter: {FILTERS[self.filter_idx][0]} · {MODES[self.mode_idx]}"
-        if x + width(right) + 2 < w:
-            self.put(0, w - width(right) - 1, right, self.c["dim"])
+            if counts.get(key):
+                parts.append((f"{counts[key]} {label}", attr))
+        total = sum(width(p) for p, _ in parts) + 3 * max(0, len(parts) - 1)
+        x = w - total - 1
+        if x > 3 + width(self.query) + 4:  # counts on the search line, when they fit
+            for p, attr in parts:
+                self.put(1, x, p, attr)
+                x += width(p) + 3
 
     def draw_preview(self, a, x, y, w, h, now):
         if not a or w < 20 or h < 3:
@@ -321,9 +413,48 @@ class Picker:
             lines.append(("", 0))
             lines.append((f"{a.kind} ›", self.c["claude"] | curses.A_BOLD))
             room = max(1, h - len(lines))
-            lines += [("  " + t, self.c["muted"]) for t in wrap(plain(s["assistant"]), w - 2, room)]
-        for i, (text, attr) in enumerate(lines[:h]):
-            self.put(y + i, x, fit(text, w), attr)
+            md = markdown.render(s["assistant"], w - 2)
+            if len(md) > room:
+                md = md[:room - 1] + [[("…", "dim")]]
+            lines += [[("  ", 0)] + [(t, self.md_attr(st)) for t, st in line] for line in md]
+        terms = search_terms(self.query)
+        for i, line in enumerate(lines[:h]):
+            segs = line if isinstance(line, list) else [line]
+            self.put_segments(y + i, x, w, self.highlight(segs, *terms))
+
+    def md_attr(self, style):
+        c = self.c
+        return {"text": c["muted"], "bold": c["text"] | curses.A_BOLD, "em": c["muted"] | ITALIC,
+                "code": c["busy"], "head": c["head"] | curses.A_BOLD, "quote": c["muted"] | ITALIC,
+                "dim": c["dim"], "border": c["line"], "codeblock": c["muted"]}.get(style, c["muted"])
+
+    @staticmethod
+    def highlight(segs, terms, smart):
+        """Split segments so search matches can be drawn reversed."""
+        if not terms:
+            return segs
+        pat = re.compile("|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)),
+                         0 if smart else re.I)
+        out = []
+        for text, attr in segs:
+            pos = 0
+            for m in pat.finditer(text):
+                if m.start() > pos:
+                    out.append((text[pos:m.start()], attr))
+                out.append((m.group(), attr | curses.A_REVERSE))
+                pos = m.end()
+            if pos < len(text):
+                out.append((text[pos:], attr))
+        return out
+
+    def put_segments(self, y, x, w, segs):
+        used = 0
+        for text, attr in segs:
+            if used >= w:
+                break
+            part = fit(text, w - used) if width(text) > w - used else text
+            self.put(y, x + used, part, attr)
+            used += width(part)
 
     def draw(self, items, sel, now):
         scr = self.scr
@@ -361,7 +492,12 @@ class Picker:
             else:
                 self.draw_row(y, 0, list_w, it, self.top + i == sel, now, win_w)
         if not items:
-            msg = "no agents match" if self.agents else "no Claude sessions found in tmux"
+            if self.query:
+                msg = "no agents match"
+            elif self.agents and self.tab.scope["kind"] != "all":
+                msg = f"nothing in {self.tab.label(40)} · ⇥ for other tabs"
+            else:
+                msg = "no AI sessions found in tmux"
             self.put(top, 3, msg, self.c["dim"])
 
         chosen = items[sel][1] if sel is not None and items[sel][0] == "agent" else None
@@ -403,8 +539,8 @@ class Picker:
         last = time.time()
         while True:
             now = time.time()
-            items, self.shown = build_items(self.agents, self.query, self.filter_idx,
-                                            MODES[self.mode_idx], self.show_older, now)
+            items, self.shown = build_items(self.agents, self.query, self.tab.scope,
+                                            MODES[self.mode_idx], self.show_older, now, self.preview_text)
             selectable = [i for i, it in enumerate(items) if it[0] != "header"]
             keys = [item_key(items[i]) for i in selectable]
             if self.sel_key not in keys:
@@ -437,6 +573,8 @@ class Picker:
                 if items[sel][0] == "more":
                     self.show_older = True
                     continue
+                self.view = views.snapshot(self.tab.scope, self.query, MODES[self.mode_idx],
+                                           self.show_older, views.next_key(keys, self.sel_key))
                 return items[sel][1]
             elif k in (curses.KEY_UP, "\x10"):
                 move = -1
@@ -451,9 +589,9 @@ class Picker:
             elif k == curses.KEY_END:
                 move = len(keys)
             elif k == "\t":
-                self.filter_idx, reset = (self.filter_idx + 1) % len(FILTERS), True
+                self.tab_idx = (self.tab_idx + 1) % len(self.tabs)
             elif k == curses.KEY_BTAB:
-                self.filter_idx, reset = (self.filter_idx - 1) % len(FILTERS), True
+                self.tab_idx = (self.tab_idx - 1) % len(self.tabs)
             elif k == "\x13":
                 self.mode_idx, reset = (self.mode_idx + 1) % len(MODES), True
             elif k == "\x0c":
@@ -495,7 +633,11 @@ def upgrade_term():
         os.environ["TERM"] = term + "-256color"
 
 
-def pick(load, here_pane=None, toggle_later=None, summarize=None, warning=None):
+def pick(load, here_pane=None, toggle_later=None, summarize=None, warning=None, **tabs):
+    """Run the picker; returns (agent or None, view to save as the back view or None).
+    tabs: scopes, back, default_tab (see Picker)."""
     os.environ.setdefault("ESCDELAY", "25")
     upgrade_term()
-    return curses.wrapper(Picker(load, here_pane, toggle_later, summarize, warning).run)
+    picker = Picker(load, here_pane, toggle_later, summarize, warning, **tabs)
+    choice = curses.wrapper(picker.run)
+    return choice, (picker.view if choice is not None else None)

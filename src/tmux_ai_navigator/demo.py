@@ -14,8 +14,11 @@ SESSIONS = [
      "but I need to know which payment processor you use. Stripe or Braintree?"),
     ("2api", "rate-limits", "Per-key rate limiting for the public API", "idle", 6 * M, "done", "rate-limit",
      "add per-key rate limiting to the public api, 100 req/min default",
-     "Done. Rate limiting uses a sliding window in Redis, keyed by API key, with a 100/min default that "
-     "can be overridden per key. Added 12 tests; all pass. Responses now include X-RateLimit-* headers."),
+     "Done. Rate limiting uses a **sliding window in Redis**, keyed by API key.\n\n"
+     "| Setting | Default | Override |\n|---|---|---|\n"
+     "| Requests per minute | 100 | per key |\n"
+     "| Burst | 20 | global only |\n\n"
+     "Added 12 tests; all pass. Responses now include `X-RateLimit-*` headers."),
     ("3infra", "", "Terraform plan for the staging VPC", "idle", 3 * H + 12 * M, "later", "main",
      "draft the terraform for a separate staging vpc",
      "The plan creates 23 resources: the VPC, 3 public and 3 private subnets, NAT gateways and routes. "
@@ -31,8 +34,8 @@ SESSIONS = [
      "Context is getting full; consider starting a fresh session for the iOS work."),
     ("1web", "seo-audit", "SEO audit of marketing pages", "idle", 48 * M, "", "main",
      "audit the marketing pages for seo problems",
-     "Found 14 issues: 6 pages missing meta descriptions, 3 duplicate titles, and images without alt text "
-     "on the pricing page. Fixes are in a draft PR."),
+     "Found **14 issues**:\n\n- 6 pages missing meta descriptions\n- 3 duplicate titles\n"
+     "- images without alt text on the pricing page\n\nFixes are in a draft PR."),
     ("2api", "", "Upgrade to Postgres 16", "shell", 1 * H + 5 * M, "", "pg16",
      "upgrade the dev database to postgres 16", "Running the migration test suite in the background..."),
     ("3infra", "ci-cache", "Speed up CI with dependency caching", "idle", 2 * H + 30 * M, "", "ci-cache",
@@ -84,6 +87,7 @@ class Demo:
                       pane_id=f"%{i + 1}", tmux_session_id=f"${sess[0]}", tmux_session=sess,
                       window_id=f"@{i + 1}", window_index=i % 9 + 1, window_name=win or "claude",
                       pane_title=f"✳ {title}", branch=branch, title=title)
+            a.session_ids = [a.tmux_session_id]
             a.done = "done" in flags
             if "later" in flags:
                 self.later.add(a.session_id)
@@ -92,6 +96,7 @@ class Demo:
             a.summary = {"user": you, "assistant": said}
             self.list.append(a)
         self.here = None
+        self.opener = ("$1", "1web", "~/code/web")  # as if opened from a pane in the web session
 
     def agents(self):
         for a in self.list:

@@ -4,6 +4,8 @@
     seen[pane_id]   last time the pane was on screen in any client (epoch seconds)
     visible         panes on screen at the last update, so leaving a pane also counts as seeing it
     created         first use; sessions that finished before this aren't reported as "done"
+    back            the picker view to come back to after a jump (see views.py)
+    recent[tty]     {panes, at}: panes that client looked at, most recent first (prefix A)
   later[session_id] when the user flagged a Claude session to come back to
 
 Records of servers that are gone are dropped, so a restarted tmux starts fresh.
@@ -81,6 +83,49 @@ def mark_visible(d, server, visible_now, now=None, extra_seen=(), alive=None):
     for pane in set(visible_now) | set(v.get("visible", [])) | set(extra_seen):
         v["seen"][pane] = max(now, v["seen"].get(pane, 0))  # monotonic: hooks may finish out of order
     v["visible"] = sorted(set(visible_now))
+
+
+RECENT_PANES = 20
+RECENT_CLIENTS = 16
+
+
+def _recent(d, server):
+    v = d.get("servers", {}).get(str(server))
+    r = v.get("recent") if isinstance(v, dict) else None
+    return r if isinstance(r, dict) else {}
+
+
+def focus_changed(d, server, focus):
+    r = _recent(d, server)
+    return any(not isinstance(r.get(tty), dict) or (r[tty].get("panes") or [None])[0] != pane
+               for tty, pane in (focus or {}).items())
+
+
+def record_focus(d, server, focus, now=None):
+    """Put each client's current pane first in its history."""
+    now = now or time.time()
+    v = d.setdefault("servers", {}).setdefault(str(server), {"seen": {}, "visible": [], "created": now})
+    r = v.get("recent") if isinstance(v.get("recent"), dict) else {}
+    for tty, pane in focus.items():
+        e = r.get(tty) if isinstance(r.get(tty), dict) else {}
+        panes = [p for p in (e.get("panes") or []) if isinstance(p, str) and p != pane]
+        r[tty] = {"panes": ([pane] + panes)[:RECENT_PANES], "at": now}
+    keep = sorted(r, key=lambda t: r[t].get("at", 0) if isinstance(r[t], dict) else 0, reverse=True)
+    v["recent"] = {t: r[t] for t in keep[:RECENT_CLIENTS]}
+
+
+def previous_pane(d, server, tty, current, candidates):
+    """The pane looked at most recently before `current` that's in candidates (agent panes):
+    from this client's history, else from other clients', most recent first."""
+    r = _recent(d, server)
+    others = sorted((t for t in r if t != tty), key=lambda t: r[t].get("at", 0) if isinstance(r[t], dict) else 0,
+                    reverse=True)
+    for t in ([tty] if tty in r else []) + others:
+        e = r[t] if isinstance(r[t], dict) else {}
+        for p in e.get("panes") or []:
+            if p != current and p in candidates:
+                return p
+    return None
 
 
 def toggle_later(d, session_id, since=None, now=None):

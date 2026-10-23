@@ -113,6 +113,11 @@ class Tmux:
     def server_pid(self):
         return self.run("display", "-p", "#{pid}", check=False).strip()
 
+    def client_panes(self):
+        """{client tty: the pane it's looking at}."""
+        out = self.run("list-clients", "-F", "#{client_tty}" + SEP + "#{pane_id}", check=False)
+        return dict(l.split(SEP, 1) for l in out.splitlines() if SEP in l)
+
     def clients(self):
         out = self.run("list-clients", "-F", "#{client_tty}", check=False)
         return [l for l in out.splitlines() if l]

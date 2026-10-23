@@ -238,6 +238,75 @@ class TmuxIntegration(unittest.TestCase):
             client.wait(timeout=5)
             client.stdin.close()
 
+    def test_jump_saves_back_view_and_reopens_on_it(self):
+        client = self.attach("home")
+        try:
+            tty = wait_for(lambda: (self.t.clients() or [None])[0])
+            self.assertTrue(tty, "client did not attach")
+            home_pane = self.t.run("display", "-p", "-t", "home:", "#{pane_id}").strip()
+
+            def picker_pane():
+                for line in self.t.run("list-panes", "-a", "-F", "#{pane_id} #{@ainav_window}").splitlines():
+                    if line.endswith(" 1"):
+                        return line.split()[0]
+            def screen(pane):
+                return self.t.run("capture-pane", "-p", "-t", pane, check=False)
+
+            self.run_cli("open", "--client", tty, "--pane", home_pane)
+            pp = wait_for(picker_pane)
+            self.assertTrue(wait_for(lambda: "fake-agent" in screen(pp) or "agentwin" in screen(pp)), screen(pp))
+            self.assertIn(" home ", screen(pp).splitlines()[0])  # the opener's session tab
+            self.t.run("send-keys", "-t", pp, "-l", "agentwin")
+            time.sleep(0.4)
+            self.t.run("send-keys", "-t", pp, "Enter")
+            self.assertTrue(wait_for(lambda: self.t.client_format(tty, "#{pane_id}").strip() == self.pane))
+            back = wait_for(lambda: self.state().read()["servers"].get(str(self.t.server_pid()), {}).get("back"))
+            self.assertTrue(back, self.state().read())
+            self.assertEqual((back["scope"]["kind"], back["query"]), ("all", "agentwin"))
+            # reopen: the picker starts on the back tab with the search restored
+            self.t.run("switch-client", "-c", tty, "-t", "home")
+            self.run_cli("open", "--client", tty, "--pane", home_pane)
+            pp = wait_for(picker_pane)
+            self.assertTrue(wait_for(lambda: "↺ back" in screen(pp)), screen(pp))
+            self.assertIn("› agentwin", screen(pp))
+            self.t.run("send-keys", "-t", pp, "Escape")
+            self.t.run("send-keys", "-t", pp, "Escape")
+            self.assertTrue(wait_for(lambda: not picker_pane()), "picker did not close")
+        finally:
+            for line in self.t.run("list-windows", "-a", "-F", "#{window_id} #{@ainav_window}").splitlines():
+                if line.endswith(" 1"):
+                    self.t.run("kill-window", "-t", line.split()[0], check=False)
+            client.terminate()
+            client.wait(timeout=5)
+            client.stdin.close()
+
+    def test_last_jumps_back_to_previous_agent(self):
+        client = self.attach("home")
+        try:
+            tty = wait_for(lambda: (self.t.clients() or [None])[0])
+            self.assertTrue(tty, "client did not attach")
+            home_pane = self.t.run("display", "-p", "-t", "home:", "#{pane_id}").strip()
+            where = lambda: self.t.client_format(tty, "#{pane_id}").strip()
+            self.t.jump(tty, *self.t.run("display", "-p", "-t", self.pane, "#{session_id} #{window_id}").split(),
+                        self.pane)
+            self.assertTrue(wait_for(lambda: where() == self.pane))
+            self.run_cli("seen")  # what the plugin's hooks do on every switch
+            self.t.run("switch-client", "-c", tty, "-t", "home")
+            self.assertTrue(wait_for(lambda: where() == home_pane))
+            self.run_cli("seen")
+            self.run_cli("last", "--client", tty, "--pane", home_pane)
+            self.assertTrue(wait_for(lambda: where() == self.pane), where())
+            # the only agent: from its own pane there's nowhere earlier to go, so it stays put
+            self.run_cli("last", "--client", tty, "--pane", self.pane)
+            time.sleep(0.3)
+            self.assertEqual(where(), self.pane)
+        finally:
+            self.t.run("switch-client", "-c", tty, "-t", "home", check=False)
+            self.run_cli("seen")  # leave "on screen" as the other tests expect it
+            client.terminate()
+            client.wait(timeout=5)
+            client.stdin.close()
+
     def test_open_uses_clients_session_for_linked_window(self):
         # link work's agent window into "home" too, then open from that pane as a client of "home"
         self.t.run("link-window", "-s", "work:agentwin", "-t", "home:")
