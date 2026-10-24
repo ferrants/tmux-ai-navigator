@@ -1,5 +1,9 @@
 # tmux-ai-navigator
 
+```
+tmux-prefix + a  # opens a navigator of your ai agents that run in tmux windows
+```
+
 A picker for the AI coding agents running in your tmux panes. It's like
 [herdr](https://herdr.dev)'s agent list, but for tmux. It shows every
 [Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex)
