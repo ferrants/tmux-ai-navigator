@@ -47,6 +47,7 @@ class Agent:
     done: bool = False
     later: bool = False
     pinned: bool = False
+    loops: List[dict] = field(default_factory=list)  # scheduled loops still active (transcript.loops)
 
     @property
     def in_tmux(self):
@@ -101,7 +102,8 @@ class Agent:
             self.title, self.name, self.kind, self.state_label, self.tag, self.location, self.window_name or "",
             self.cwd, self.branch, self.session_id, self.pane_id or "", " ".join(self.extra_lines),
             self.extra_search, self.badge,
-            "later" if self.later else "", "pinned" if self.pinned else ""))
+            "later" if self.later else "", "pinned" if self.pinned else "",
+            " ".join(["loop"] + [l["prompt"] for l in self.loops]) if self.loops else ""))
 
 
 def map_to_panes(pids, panes, table, current_session=None):
@@ -308,6 +310,8 @@ class Discovery:
         for a in out:
             extrasmod.apply(a, info.get(a.session_id) or {})
             a.title = pick_title(a, names.get(a.session_id, ("", "")) if a.kind == "codex" else None)
+            if a.kind == "claude":
+                a.loops = transcript.loops(a.session_id, a.started, a.status == "busy")
         transcript.save_title_cache()
         return out
 

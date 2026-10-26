@@ -75,6 +75,12 @@ EXTRAS = {
 }
 
 
+# scheduled loops (CronCreate, /loop) still running: session index -> loops
+LOOPS = {
+    7: [{"kind": "cron", "schedule": "Every 5 minutes", "prompt": "/check-migration", "next": None}],
+}
+
+
 class Demo:
     def __init__(self, now=None):
         self.t0 = now or time.time()
@@ -96,6 +102,7 @@ class Demo:
                 self.pins.add(a.session_id)
             if i in EXTRAS:
                 a.badge, a.badge_style, a.extra_lines = EXTRAS[i]
+            a.loops = LOOPS.get(i, [])
             a.summary = {"user": you, "assistant": said}
             self.list.append(a)
         self.here = None

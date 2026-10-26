@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Loops: a `↻` marks Claude sessions with a scheduled loop (`CronCreate` jobs and `/loop`
+  wakeups, replayed from the transcript), and the preview lists each one's schedule and prompt.
+  Transcripts are now scanned in chunks, so a first scan stays small in memory.
 - Pins: `ctrl-t` in the picker or `prefix P` (`@ainav-pin-key`) keeps a session in a PINNED
   section at the top until you unpin it, even after you reply. Pins survive tmux restarts.
 - Tabs: `tab` now switches between all, the tmux session and the project (git repo) you

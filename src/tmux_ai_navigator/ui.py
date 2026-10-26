@@ -310,7 +310,9 @@ class Picker:
         tag = fit(a.tag, 10)
         badge = fit(clean(a.badge), 8)
         mark = KIND_MARKS.get(a.kind, "")
-        right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0)
+        loop = "↻" if a.loops else ""
+        right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0) \
+            + (2 if loop else 0)
         title = clean(a.title) + (" (here)" if a.pane_id and a.pane_id == self.here else
                                   " ↩" if a.pane_id and a.pane_id == self.previous else "")
         bold = curses.A_BOLD if a.section(now) in ("needs", "working") else 0
@@ -325,6 +327,9 @@ class Picker:
         title_attr = (c["text"] | bold) if not win_w else c["text"] if bold else c["muted"]
         self.put(y, x, fit("" if same else title, room), title_attr)
         x = x0 + w - right_w - 1
+        if loop:
+            self.put(y, x, loop, c["busy"] | curses.A_BOLD)
+            x += 2
         if mark:
             self.put(y, x, mark, c["muted"])
             x += len(mark) + 1
@@ -403,6 +408,12 @@ class Picker:
         if a.pinned:
             st += "  pinned"
         lines.append((st, attr))
+        for lp in a.loops[:3]:
+            when = f" · next {time.strftime('%-I:%M%p', time.localtime(lp['next'])).lower()}" \
+                if lp.get("next") and lp["kind"] == "wakeup" else ""
+            sched = lp['schedule'][:1].lower() + lp['schedule'][1:]
+            text = f"↻ {sched}{when}" + (f" · {clean(lp['prompt'])}" if lp.get("prompt") else "")
+            lines += [(t, self.c["busy"]) for t in wrap(text, w, 2)][:2]
         if a.extra_lines:
             lines.append(("", 0))
             for n in a.extra_lines:

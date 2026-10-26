@@ -96,6 +96,7 @@ Codex sessions are marked `cx`.
 | ⠋ | working |
 | $ | a background shell is running |
 | ○ | idle |
+| ↻ | (right side) a scheduled loop is running: a `CronCreate` job or `/loop` |
 
 | key | |
 |---|---|
@@ -108,6 +109,13 @@ Codex sessions are marked `cx`.
 | ctrl-t | pin or unpin the selected session |
 | ctrl-u / ctrl-w | clear the search / delete the last word |
 | esc | clear the search, or quit if it's empty |
+
+Sessions with a loop scheduled (`/loop`, or a job Claude made with `CronCreate`) get a `↻`
+next to the project, and the preview lists each loop: its schedule, its prompt and, for
+`/loop`, the next wakeup. Claude keeps these jobs in memory only, so the navigator replays
+them from the transcript: created, deleted, listed, and dropped once Claude restarts, a
+recurring job expires (7 days), a one-shot fires or a `/loop` stops rescheduling. Search
+`loop` to list them.
 
 `prefix u` flags the session in the current pane for later without opening the picker. A
 flag clears once you prompt that session again.

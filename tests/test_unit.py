@@ -265,6 +265,11 @@ class SortSearchTests(unittest.TestCase):
         items, _ = build_items(a, "pinned", views.ALL, "priority", False, now)
         self.assertEqual([it[1].name for it in items if it[0] == "agent"], ["pin-run", "pin-ask", "pin-old"])
 
+    def test_loops_are_searchable(self):
+        a = ag("w", loops=[{"kind": "cron", "schedule": "Every 5 minutes", "prompt": "/check-deploy", "next": None}])
+        self.assertTrue(matches(a, "loop") and matches(a, "check-deploy"))
+        self.assertFalse(matches(ag("v"), "loop"))
+
     def test_project_mode_groups_by_tmux_session_tag(self):
         now = self.NOW
         a = [ag("a", session="1web", since=now - 9), ag("b", session="api", since=now - 1),
@@ -618,6 +623,90 @@ class StateTests(unittest.TestCase):
 
 
 class TranscriptTests(unittest.TestCase):
+    def write_transcript(self, lines, sid="sid"):
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, "projects", "-x"))
+        path = os.path.join(home, "projects", "-x", f"{sid}.jsonl")
+        with open(path, "w") as f:
+            for l in lines:
+                f.write(json.dumps(l, separators=(",", ":")) + "\n")
+        patcher = mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        transcript._paths.clear()
+        return path
+
+    @staticmethod
+    def call(i, name, inp, ts, result=None, text="", error=False):
+        """A tool_use line and its tool_result line, as Claude writes them."""
+        use = {"type": "assistant", "timestamp": ts,
+               "message": {"content": [{"type": "tool_use", "id": f"toolu_{i}", "name": name, "input": inp}]}}
+        res = {"type": "user", "timestamp": ts, "toolUseResult": result,
+               "message": {"content": [{"type": "tool_result", "tool_use_id": f"toolu_{i}", "content": text,
+                                        **({"is_error": True} if error else {})}]}}
+        return [use, res]
+
+    def test_loops_replay_create_delete_list_and_wakeups(self):
+        t0 = 1793000000.0  # 2026-10-26T...
+        iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+        c = self.call
+        lines = (c(1, "CronCreate", {"cron": "*/5 * * * *", "prompt": "/check-deploy", "recurring": True}, iso(t0),
+                   {"id": "aaaa1111", "humanSchedule": "Every 5 minutes", "recurring": True, "durable": False},
+                   "Scheduled recurring job aaaa1111 (Every 5 minutes). Auto-expires after 7 days.")
+                 + c(2, "CronCreate", {"cron": "*/9 * * * *", "prompt": "gone\nsecond line", "recurring": True},
+                     iso(t0 + 1), {"id": "bbbb2222", "humanSchedule": "Every 9 minutes", "recurring": True})
+                 + c(3, "CronDelete", {"id": "bbbb2222"}, iso(t0 + 2), {"id": "bbbb2222"}, "Cancelled job bbbb2222.")
+                 + c(4, "CronDelete", {"id": "aaaa1111"}, iso(t0 + 3), None, "error", error=True)
+                 + c(5, "CronCreate", {"cron": "30 14 27 10 *", "prompt": "remind me", "recurring": False}, iso(t0 + 4),
+                     {"id": "cccc3333", "humanSchedule": "once", "recurring": False, "nextFireAt": (t0 + 3600) * 1000})
+                 + c(6, "ScheduleWakeup", {"delaySeconds": 600, "prompt": "/loop watch ci", "reason": "x"}, iso(t0 + 5),
+                     {"scheduledFor": (t0 + 605) * 1000, "clampedDelaySeconds": 600, "wasClamped": False}))
+        path = self.write_transcript(lines)
+        got = transcript.loops("sid", started=t0 - 100, now=t0 + 60)
+        self.assertEqual([(l["kind"], l["schedule"], l["prompt"]) for l in got],
+                         [("cron", "Every 5 minutes", "/check-deploy"), ("once", got[1]["schedule"], "remind me"),
+                          ("wakeup", "/loop", "/loop watch ci")])
+        self.assertEqual(got[2]["next"], t0 + 605)
+        # Claude restarted after the jobs were made: session-only jobs are gone
+        self.assertEqual(transcript.loops("sid", started=t0 + 50, now=t0 + 60), [])
+        # the one-shot fired, the wakeup passed while idle, the cron expired after 7 days
+        self.assertEqual([l["kind"] for l in transcript.loops("sid", started=t0 - 100, now=t0 + 3700)], ["cron"])
+        self.assertEqual([l["kind"] for l in transcript.loops("sid", t0 - 100, busy=True, now=t0 + 700)],
+                         ["cron", "once", "wakeup"])  # a /loop turn is running: it will reschedule
+        self.assertEqual(transcript.loops("sid", started=t0 - 100, now=t0 + 8 * 86400), [])
+        # appended later: CronList is the truth, and stopping the loop ends the wakeup
+        with open(path, "a") as f:
+            for l in (c(7, "CronList", {}, iso(t0 + 70),
+                        {"jobs": [{"id": "dddd4444", "cron": "0 * * * *", "humanSchedule": "Every hour",
+                                   "prompt": "hourly", "recurring": True}]})
+                      + c(8, "ScheduleWakeup", {"stop": True}, iso(t0 + 71), {"stopped": True, "scheduledFor": 0})):
+                f.write(json.dumps(l, separators=(",", ":")) + "\n")
+        got = transcript.loops("sid", started=t0 - 100, now=t0 + 80)
+        self.assertEqual([(l["schedule"], l["prompt"]) for l in got], [("Every hour", "hourly")])
+
+    def test_loops_survive_a_scan_split_between_call_and_result(self):
+        t0 = 1793000000.0
+        iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+        use, res = self.call(1, "CronCreate", {"cron": "*/5 * * * *", "prompt": "p"}, iso(t0),
+                             {"id": "aaaa1111", "humanSchedule": "Every 5 minutes", "recurring": True})
+        path = self.write_transcript([use])
+        self.assertEqual(transcript.loops("sid", now=t0 + 1), [])
+        with open(path, "a") as f:
+            f.write(json.dumps(res, separators=(",", ":")) + "\n")
+        self.assertEqual(len(transcript.loops("sid", now=t0 + 2)), 1)
+
+    def test_once_at(self):
+        after = time.mktime((2026, 10, 26, 12, 0, 0, 0, 0, -1))
+        self.assertEqual(transcript._once_at("30 14 26 10 *", after), time.mktime((2026, 10, 26, 14, 30, 0, 0, 0, -1)))
+        self.assertEqual(transcript._once_at("0 9 1 1 *", after), time.mktime((2027, 1, 1, 9, 0, 0, 0, 0, -1)))
+        self.assertEqual(transcript._once_at("*/5 * * * *", after + 61), after + 300)
+        self.assertEqual(transcript._once_at("*/5 * * * *", after + 300 + 30), after + 600)  # made mid-minute
+        self.assertEqual(transcript._once_at("15 9 * * 1", after), time.mktime((2026, 11, 2, 9, 15, 0, 0, 0, -1)))
+        self.assertEqual(transcript._once_at("0 9 1 * *", after), time.mktime((2026, 11, 1, 9, 0, 0, 0, 0, -1)))
+        self.assertEqual(transcript._once_at("0 9 1 3 *", after), time.mktime((2027, 3, 1, 9, 0, 0, 0, 0, -1)))
+        self.assertIsNone(transcript._once_at("not a cron", after))
+        self.assertIsNone(transcript._once_at("0 0 31 2 *", after))  # never: Feb 31
+
     def test_summary_skips_tool_results_and_meta(self):
         home = tempfile.mkdtemp()
         os.makedirs(os.path.join(home, "projects", "-x"))
