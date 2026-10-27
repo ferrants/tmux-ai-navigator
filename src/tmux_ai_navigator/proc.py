@@ -7,6 +7,7 @@ told apart. The token is platform specific, and we must produce exactly the same
 """
 import calendar
 import os
+import re
 import subprocess
 import sys
 import time
@@ -47,17 +48,58 @@ class ProcTable:
         st = read_stat(pid, self.root)
         return (st[0], str(st[1])) if st else None
 
+    def children(self, pid):
+        """Child pids (of the main thread, which is where Node and Python spawn from)."""
+        try:
+            with open(os.path.join(self.root, str(pid), "task", str(pid), "children")) as f:
+                return [int(x) for x in f.read().split()]
+        except (OSError, ValueError):
+            return []
+
+    def argv(self, pid):
+        try:
+            with open(os.path.join(self.root, str(pid), "cmdline"), "rb") as f:
+                return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+        except OSError:
+            return []
+
 
 class PsTable:
     """Everywhere else (macOS): one `ps` snapshot of every process."""
 
-    def __init__(self, output=None):
+    def __init__(self, output=None, args=None):
         if output is None:
             output = ps_output()
         self.procs = parse_ps(output)
+        self._args = args  # pid -> (ppid, command line), read on first use
 
     def info(self, pid):
         return self.procs.get(pid)
+
+    def _listing(self):
+        if self._args is None:
+            self._args = {}
+            try:
+                out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,args="], stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            for line in out.splitlines():
+                parts = line.split(None, 2)
+                try:
+                    self._args[int(parts[0])] = (int(parts[1]), parts[2] if len(parts) > 2 else "")
+                except (IndexError, ValueError):
+                    continue
+        return self._args
+
+    def children(self, pid):
+        return [p for p, (pp, _) in self._listing().items() if pp == pid]
+
+    def argv(self, pid):
+        """ps prints the command line joined by spaces; enough to recognize and show it."""
+        args = self._listing().get(pid, (0, ""))[1]
+        first, _, rest = args.partition(" ")
+        return [first] + ([rest] if rest else []) if first else []
 
 
 def ps_output():
@@ -142,6 +184,35 @@ def processes_named(name, proc=PROC, ps=None):
                 out.append((int(parts[0]), parts[1:]))
             except ValueError:
                 continue
+    return out
+
+
+SHELLS = {"bash", "zsh", "sh", "dash", "fish", "ksh"}
+# how Claude's Bash tool runs a command: <shell> -c '[source <snapshot> &&] shopt ... && eval '<cmd>' < /dev/null ...'
+_CLAUDE_SHELL = re.compile(r"shell-snapshots/snapshot-|shopt -u extglob")
+_EVAL = re.compile(r"eval '(.*?)'(?: < /dev/null)?(?: && pwd -P >\| \S+)?\s*$", re.S)
+
+
+def shell_command(argv):
+    """The command a Claude Bash-tool shell is running, or None if argv isn't one."""
+    if len(argv) < 2 or os.path.basename(argv[0]).lstrip("-") not in SHELLS:
+        return None
+    script = argv[-1] if "-c" in argv[1:-1] else " ".join(argv[1:])
+    if not _CLAUDE_SHELL.search(script):
+        return None
+    m = _EVAL.search(script)
+    return m.group(1).replace("'\"'\"'", "'").strip() if m else ""
+
+
+def background_shells(pid, table, proc=PROC):
+    """[(pid, start epoch, command)] of the Bash-tool shells running under a Claude process."""
+    out = []
+    for c in table.children(pid):
+        cmd = shell_command(table.argv(c))
+        if cmd is None:
+            continue
+        info = table.info(c)
+        out.append((c, start_epoch(info[1], proc) if info else 0.0, cmd))
     return out
 
 

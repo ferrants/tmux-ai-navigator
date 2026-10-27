@@ -48,6 +48,7 @@ class Agent:
     later: bool = False
     pinned: bool = False
     loops: List[dict] = field(default_factory=list)  # scheduled loops still active (transcript.loops)
+    shells: List[dict] = field(default_factory=list)  # background Bash-tool shells: {pid, started, command}
 
     @property
     def in_tmux(self):
@@ -103,7 +104,21 @@ class Agent:
             self.cwd, self.branch, self.session_id, self.pane_id or "", " ".join(self.extra_lines),
             self.extra_search, self.badge,
             "later" if self.later else "", "pinned" if self.pinned else "",
-            " ".join(["loop"] + [l["prompt"] for l in self.loops]) if self.loops else ""))
+            " ".join(["loop"] + [l["prompt"] for l in self.loops]) if self.loops else "",
+            " ".join(["shell"] + [s["command"] for s in self.shells]) if self.shells else ""))
+
+
+def background_shells(agent, table, proc=procmod.PROC):
+    """Shells the agent's Bash tool left running. While it's working, only ones from before this
+    turn count (the rest may be the command it's running right now). Claude's own "shell" status
+    counts even if the shell can't be found."""
+    found = procmod.background_shells(agent.pid, table, proc)
+    if agent.status == "busy":
+        found = [s for s in found if agent.since and s[1] and s[1] < agent.since - 1]
+    out = [{"pid": p, "started": t, "command": c} for p, t, c in sorted(found, key=lambda s: s[1])]
+    if not out and agent.status == "shell":
+        out = [{"pid": None, "started": agent.since, "command": ""}]
+    return out
 
 
 def map_to_panes(pids, panes, table, current_session=None):
@@ -303,6 +318,8 @@ class Discovery:
             a.done = state.is_done(a, view, visible)
             a.later = state.later_active(a, st)
             a.pinned = a.session_id in st["pins"]
+            if a.kind == "claude":
+                a.shells = background_shells(a, table, self.proc)
             out.append(a)
         names = {d["sessionId"]: (text(d.get("threadName")), text(d.get("firstMessage")))
                  for d in entries if d.get("agent") == "codex"}

@@ -70,6 +70,68 @@ class ProcTests(unittest.TestCase):
         self.assertEqual(claude.live([dict(entry, procStart="Mon Oct 13 18:49:02 2026")], t, None), [])
 
 
+class ShellTests(unittest.TestCase):
+    SNAP = ("source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && shopt -u extglob "
+            "2>/dev/null || true && eval 'cd /repo && npm run dev -- --port '\"'\"'3000'\"'\"'' < /dev/null "
+            "&& pwd -P >| /tmp/claude-1a2b-cwd")
+
+    def test_shell_command(self):
+        self.assertEqual(proc.shell_command(["/bin/bash", "-c", self.SNAP]), "cd /repo && npm run dev -- --port '3000'")
+        self.assertEqual(proc.shell_command(["/bin/zsh", "-c", "-l", "shopt -u extglob 2>/dev/null && eval 'make' "
+                                             "< /dev/null && pwd -P >| /tmp/c"]), "make")
+        self.assertIsNone(proc.shell_command(["/bin/sh", "-c", "statusline.sh"]))  # hooks, status line
+        self.assertIsNone(proc.shell_command(["/usr/bin/python3", "-c", self.SNAP]))
+        self.assertIsNone(proc.shell_command([]))
+        # macOS ps joins the command line with spaces
+        self.assertEqual(proc.shell_command(["/bin/bash", "-c " + self.SNAP]), "cd /repo && npm run dev -- --port '3000'")
+
+    def test_background_shells_and_busy_turns(self):
+        class Table:
+            procs = {10: (1, "a"), 11: (10, "b"), 12: (10, "c"), 13: (10, "d")}
+            argvs = {11: ["/bin/bash", "-c", ShellTests.SNAP], 12: ["node", "mcp.js"],
+                    13: ["/bin/bash", "-c", ShellTests.SNAP.replace("npm run dev", "pytest")]}
+
+            def info(self, pid):
+                return self.procs.get(pid)
+
+            def children(self, pid):
+                return [p for p, (pp, _) in self.procs.items() if pp == pid]
+
+            def argv(self, pid):
+                return Table.argvs[pid]
+        starts = {"b": 100.0, "d": 500.0}
+        with mock.patch.object(proc, "start_epoch", lambda tok, proc=None: starts.get(tok, 0.0)):
+            a = ag("x", "idle", since=400.0)
+            a.pid = 10
+            self.assertEqual([s["pid"] for s in agents.background_shells(a, Table())], [11, 13])
+            a.status = "busy"  # pytest started this turn: maybe the command it's running right now
+            self.assertEqual([s["pid"] for s in agents.background_shells(a, Table())], [11])
+        a = ag("y", "shell", since=50.0)
+        a.pid = 99
+        self.assertEqual(agents.background_shells(a, Table()), [{"pid": None, "started": 50.0, "command": ""}])
+
+    def test_short_command(self):
+        from tmux_ai_navigator.ui import short_command
+        self.assertEqual(short_command("cd /repo && S=/tmp/x; npm test"), "npm test")
+        self.assertEqual(short_command("cd /repo\nS=/tmp/x\nfor i in 1 2; do sleep 1; done"), "for i in 1 2; do sleep 1; done")
+        self.assertEqual(short_command("cd /repo"), "cd /repo")
+        self.assertEqual(short_command(""), "")
+
+    def test_proc_table_children_and_argv(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "10", "task", "10"))
+        with open(os.path.join(root, "10", "task", "10", "children"), "w") as f:
+            f.write("11 12 ")
+        with open(os.path.join(root, "10", "cmdline"), "wb") as f:
+            f.write(b"/bin/bash\0-c\0echo hi\0")
+        t = proc.ProcTable(root)
+        self.assertEqual(t.children(10), [11, 12])
+        self.assertEqual(t.argv(10), ["/bin/bash", "-c", "echo hi"])
+        self.assertEqual((t.children(99), t.argv(99)), ([], []))
+        ps = proc.PsTable(output="", args={10: (1, "/bin/bash -c echo hi"), 11: (10, "sleep 5")})
+        self.assertEqual((ps.children(10), ps.argv(10)), ([11], ["/bin/bash", "-c echo hi"]))
+
+
 class LiveTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()

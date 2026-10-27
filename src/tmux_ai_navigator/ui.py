@@ -141,6 +141,21 @@ def fit_left(s, w):
     return "…" + "".join(reversed(out))
 
 
+_SETUP = re.compile(r"^(?:cd\s+\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s*(?:&&|;)\s*")
+_SETUP_LINE = re.compile(r"^(?:cd\s+\S+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s*$")
+
+
+def short_command(cmd):
+    """The interesting part of a shell command: past `cd dir &&` and `VAR=...` setup lines."""
+    for line in (cmd or "").splitlines():
+        line = line.strip()
+        while _SETUP.match(line):
+            line = _SETUP.sub("", line, count=1)
+        if line and not _SETUP_LINE.match(line):
+            return clean(line)
+    return clean((cmd or "").strip().splitlines()[0]) if (cmd or "").strip() else ""
+
+
 def build_items(agents, query, scope, mode, show_older, now=None, text=None):
     """Display items: ("header", key, title, n) | ("agent", agent) | ("more", n).
 
@@ -285,9 +300,7 @@ class Picker:
             return SPINNER[int(time.time() * 4) % len(SPINNER)], c["busy"] | curses.A_BOLD
         if a.later:
             return "⚑", c["later"]
-        if a.status == "shell":
-            return "$", c["busy"]
-        return "○", c["dim"]
+        return "○", c["dim"]  # idle, or "shell": idle with a background shell (the $ on the right)
 
     def put(self, y, x, text, attr=0):
         try:
@@ -300,6 +313,10 @@ class Picker:
         self.put(y, x0, " " * w, c["text"])
         if chosen:
             self.put(y, x0, "▌", c["accent"])
+        elif it[0] == "agent" and it[1].pane_id and it[1].pane_id == self.here:
+            self.put(y, x0, "▸", c["accent"] | curses.A_BOLD)  # where the picker was opened from
+        elif it[0] == "agent" and it[1].pane_id and it[1].pane_id == self.previous:
+            self.put(y, x0, "↩", c["muted"])  # where prefix A goes
         if it[0] == "more":
             self.put(y, x0 + 3, fit(f"▸ {it[1]} older than a day · enter to show", w - 4), c["dim"])
             return
@@ -311,10 +328,10 @@ class Picker:
         badge = fit(clean(a.badge), 8)
         mark = KIND_MARKS.get(a.kind, "")
         loop = "↻" if a.loops else ""
+        shells = ("$" + (str(len(a.shells)) if len(a.shells) > 1 else "")) if a.shells else ""
         right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0) \
-            + (2 if loop else 0)
-        title = clean(a.title) + (" (here)" if a.pane_id and a.pane_id == self.here else
-                                  " ↩" if a.pane_id and a.pane_id == self.previous else "")
+            + (2 if loop else 0) + (len(shells) + 1 if shells else 0)
+        title = clean(a.title)
         bold = curses.A_BOLD if a.section(now) in ("needs", "working") else 0
         x = x0 + 3
         room = w - 4 - right_w - 2
@@ -327,6 +344,9 @@ class Picker:
         title_attr = (c["text"] | bold) if not win_w else c["text"] if bold else c["muted"]
         self.put(y, x, fit("" if same else title, room), title_attr)
         x = x0 + w - right_w - 1
+        if shells:
+            self.put(y, x, shells, c["busy"])
+            x += len(shells) + 1
         if loop:
             self.put(y, x, loop, c["busy"] | curses.A_BOLD)
             x += 2
@@ -391,6 +411,10 @@ class Picker:
         loc = f"{a.location} {clean(a.window_name or '')}  ·  {a.pane_id or '-'}"
         if a.other_sessions:
             loc += f"  ·  also in {', '.join(a.other_sessions)}"
+        if a.pane_id and a.pane_id == self.here:
+            loc += "  ·  ▸ you're here"
+        elif a.pane_id and a.pane_id == self.previous:
+            loc += "  ·  ↩ prefix A goes here"
         lines.append((loc, self.c["dim"]))
         age = fmt_age(a.age(now))
         if a.status == "waiting":
@@ -399,8 +423,6 @@ class Picker:
             st, attr = f"✓ finished {age} ago", self.c["done"] | curses.A_BOLD
         elif a.status == "busy":
             st, attr = f"working · {age}", self.c["busy"]
-        elif a.status == "shell":
-            st, attr = f"$ shell running · {age}", self.c["busy"]
         else:
             st, attr = f"idle · {age}", self.c["dim"]
         if a.later:
@@ -414,6 +436,12 @@ class Picker:
             sched = lp['schedule'][:1].lower() + lp['schedule'][1:]
             text = f"↻ {sched}{when}" + (f" · {clean(lp['prompt'])}" if lp.get("prompt") else "")
             lines += [(t, self.c["busy"]) for t in wrap(text, w, 2)][:2]
+        for sh in a.shells[:3]:
+            started = f" · {fmt_age(now - sh['started'])}" if sh.get("started") else ""
+            lines += [(t, self.c["busy"]) for t in wrap(f"$ {short_command(sh['command']) or 'background shell'}{started}",
+                                                          w, 1)]
+        if len(a.shells) > 3:
+            lines.append((f"$ +{len(a.shells) - 3} more", self.c["busy"]))
         if a.extra_lines:
             lines.append(("", 0))
             for n in a.extra_lines:

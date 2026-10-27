@@ -81,6 +81,10 @@ LOOPS = {
 }
 
 
+# background shells the Bash tool left running: session index -> commands
+SHELLS = {7: ["npm run test:migrations -- --db pg16"]}
+
+
 class Demo:
     def __init__(self, now=None):
         self.t0 = now or time.time()
@@ -103,9 +107,10 @@ class Demo:
             if i in EXTRAS:
                 a.badge, a.badge_style, a.extra_lines = EXTRAS[i]
             a.loops = LOOPS.get(i, [])
+            a.shells = [{"pid": None, "started": self.t0 - age, "command": c} for c in SHELLS.get(i, [])]
             a.summary = {"user": you, "assistant": said}
             self.list.append(a)
-        self.here = None
+        self.here = "%4"  # as if opened from the dark-mode pane
         self.opener = ("$1", "1web", "~/code/web")  # as if opened from a pane in the web session
 
     def agents(self):

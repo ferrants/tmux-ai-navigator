@@ -94,9 +94,17 @@ Codex sessions are marked `cx`.
 | ✓ | finished since you last looked at its pane |
 | ⚑ | flagged for later |
 | ⠋ | working |
-| $ | a background shell is running |
 | ○ | idle |
-| ↻ | (right side) a scheduled loop is running: a `CronCreate` job or `/loop` |
+
+On the right, next to the project:
+
+| | |
+|---|---|
+| `$` / `$3` | Claude's Bash tool has shells running in the background (how many) |
+| ↻ | a scheduled loop is running: a `CronCreate` job or `/loop` |
+
+At the left edge, `▸` marks the pane you opened the picker from and `↩` the agent `prefix A`
+goes back to.
 
 | key | |
 |---|---|
@@ -109,6 +117,12 @@ Codex sessions are marked `cx`.
 | ctrl-t | pin or unpin the selected session |
 | ctrl-u / ctrl-w | clear the search / delete the last word |
 | esc | clear the search, or quit if it's empty |
+
+Background shells are the Bash tool's processes still running under Claude: commands it ran in
+the background, servers, watchers, `until` loops. They count whatever the session's status, so a
+session waiting for you can show it's still doing something. The preview lists each one's
+command (past the `cd` and variable setup) and how long it has been running. Search `shell` to
+list them.
 
 Sessions with a loop scheduled (`/loop`, or a job Claude made with `CronCreate`) get a `↻`
 next to the project, and the preview lists each loop: its schedule, its prompt and, for

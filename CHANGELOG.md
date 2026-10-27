@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Background shells: `$` (or `$3`) next to the project when Claude's Bash tool has shells still
+  running, found in the process tree whatever the session's status; the preview lists their
+  commands and how long they've run. The `$` status icon for idle-with-a-shell is now `○`.
+- `▸` at the left edge marks the pane you opened the picker from (was "(here)" after the
+  title), and `↩` (where `prefix A` goes) moved there too.
 - Loops: a `↻` marks Claude sessions with a scheduled loop (`CronCreate` jobs and `/loop`
   wakeups, replayed from the transcript), and the preview lists each one's schedule and prompt.
   Transcripts are now scanned in chunks, so a first scan stays small in memory.
