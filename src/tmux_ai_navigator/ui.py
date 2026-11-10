@@ -8,7 +8,7 @@ import unicodedata
 import zlib
 
 from . import markdown, transcript, views
-from .agents import arrange, fmt_age
+from .agents import arrange, fmt_age, fmt_bytes
 from .views import OLDER
 
 MODES = list(views.MODES)
@@ -18,6 +18,7 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TICK_MS = 250
 REFRESH_S = 1.0
 BADGE_COLORS = {"warn": "err", "info": "accent", "dim": "dim"}
+MEMORY_HIGH = 2 * 2 ** 30  # an agent's memory is shown in orange from here
 
 HELP = "enter jump · type to search · ↑↓ move · ⇥ tabs · ^s group · ^l later · ^t pin · esc clear/quit"
 
@@ -213,8 +214,9 @@ class Picker:
     show_older = tab_property("show_older")
 
     def __init__(self, load, here_pane=None, toggle_later=None, summarize=None, warning=None,
-                 scopes=None, back=None, default_tab="all", previous=None, toggle_pin=None):
+                 scopes=None, back=None, default_tab="all", previous=None, toggle_pin=None, memory=False):
         self.load = load                # () -> list[Agent]
+        self.memory = memory            # a memory column (@ainav-memory)
         self.toggle_later_cb = toggle_later
         self.toggle_pin_cb = toggle_pin
         self.summarize = summarize or transcript.summary  # session id -> {"user", "assistant"}
@@ -330,7 +332,7 @@ class Picker:
         loop = "↻" if a.loops else ""
         shells = ("$" + (str(len(a.shells)) if len(a.shells) > 1 else "")) if a.shells else ""
         right_w = width(tag) + 1 + 5 + (width(badge) + 1 if badge else 0) + (len(mark) + 1 if mark else 0) \
-            + (2 if loop else 0) + (len(shells) + 1 if shells else 0)
+            + (2 if loop else 0) + (len(shells) + 1 if shells else 0) + (5 if self.memory else 0)
         title = clean(a.title)
         bold = curses.A_BOLD if a.section(now) in ("needs", "working") else 0
         x = x0 + 3
@@ -357,7 +359,12 @@ class Picker:
             self.put(y, x, badge, c[BADGE_COLORS.get(a.badge_style, "dim")])
             x += width(badge) + 1
         self.put(y, x, tag, self.tag_attr(a.tag, chosen))
-        self.put(y, x + width(tag) + 1, age.rjust(5), c["dim"])
+        x += width(tag) + 1
+        if self.memory:
+            rss = a.memory["rss"] if a.memory else None
+            self.put(y, x, fmt_bytes(rss).rjust(4), c["wait"] if rss and rss >= MEMORY_HIGH else c["dim"])
+            x += 5
+        self.put(y, x, age.rjust(5), c["dim"])
 
     def draw_tabs(self, x, room):
         """Tab bar from x within room columns; scrolls so the active tab stays visible."""
@@ -430,6 +437,13 @@ class Picker:
         if a.pinned:
             st += "  pinned"
         lines.append((st, attr))
+        if self.memory and a.memory:
+            m = a.memory
+            text = f"memory {fmt_bytes(m['rss'])}"
+            if m["children"]:
+                n = m["children"]
+                text += f" · {fmt_bytes(m['tree'])} with {n} child process{'es' if n > 1 else ''}"
+            lines.append((text, self.c["wait"] if m["rss"] >= MEMORY_HIGH else self.c["dim"]))
         for lp in a.loops[:3]:
             when = f" · next {time.strftime('%-I:%M%p', time.localtime(lp['next'])).lower()}" \
                 if lp.get("next") and lp["kind"] == "wakeup" else ""
@@ -684,7 +698,7 @@ def upgrade_term():
 
 def pick(load, here_pane=None, toggle_later=None, summarize=None, warning=None, **tabs):
     """Run the picker; returns (agent or None, view to save as the back view or None).
-    tabs: scopes, back, default_tab, previous, toggle_pin (see Picker)."""
+    tabs: scopes, back, default_tab, previous, toggle_pin, memory (see Picker)."""
     os.environ.setdefault("ESCDELAY", "25")
     upgrade_term()
     picker = Picker(load, here_pane, toggle_later, summarize, warning, **tabs)

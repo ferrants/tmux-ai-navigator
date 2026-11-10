@@ -49,6 +49,7 @@ class Agent:
     pinned: bool = False
     loops: List[dict] = field(default_factory=list)  # scheduled loops still active (transcript.loops)
     shells: List[dict] = field(default_factory=list)  # background Bash-tool shells: {pid, started, command}
+    memory: Optional[dict] = None  # with @ainav-memory: {rss, tree, children} (proc.memory)
 
     @property
     def in_tmux(self):
@@ -226,8 +227,9 @@ def text(v):
 
 
 class Discovery:
-    def __init__(self, tmux, sessions_dir=None, proc=procmod.PROC, state_store=None, extras=None):
+    def __init__(self, tmux, sessions_dir=None, proc=procmod.PROC, state_store=None, extras=None, memory=False):
         self.tmux = tmux
+        self.memory = memory  # read each agent's memory use (@ainav-memory)
         self.files = claude.SessionFiles(sessions_dir)
         self.proc = proc
         self.extras = extras or extrasmod.Extras(None)
@@ -320,6 +322,8 @@ class Discovery:
             a.pinned = a.session_id in st["pins"]
             if a.kind == "claude":
                 a.shells = background_shells(a, table, self.proc)
+            if self.memory:
+                a.memory = procmod.memory(a.pid, table)
             out.append(a)
         names = {d["sessionId"]: (text(d.get("threadName")), text(d.get("firstMessage")))
                  for d in entries if d.get("agent") == "codex"}
@@ -388,6 +392,17 @@ def sort_agents(agents, mode="priority", now=None):
     if mode == "session":
         return sorted(agents, key=lambda a: (a.tmux_session or "~", a.window_index or 0, a.name))
     return [a for _, _, items in arrange(agents, "priority", now) for a in items]
+
+
+def fmt_bytes(n):
+    """Memory as at most 4 characters: "312M", "1.4G", "12G"."""
+    if n is None:
+        return ""
+    mib = n / 2 ** 20
+    if mib < 999.5:
+        return f"{mib:.0f}M"
+    gib = n / 2 ** 30
+    return f"{gib:.1f}G" if gib < 9.95 else f"{gib:.0f}G"
 
 
 def fmt_age(sec):

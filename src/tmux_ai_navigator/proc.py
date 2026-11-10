@@ -6,6 +6,7 @@ told apart. The token is platform specific, and we must produce exactly the same
   macOS:  `ps -o lstart= -p <pid>` with LC_ALL=C TZ=UTC, e.g. "Mon Oct 13 18:49:01 2026"
 """
 import calendar
+import glob
 import os
 import re
 import subprocess
@@ -13,6 +14,10 @@ import sys
 import time
 
 PROC = "/proc"
+try:
+    PAGE = os.sysconf("SC_PAGE_SIZE")
+except (AttributeError, ValueError, OSError):
+    PAGE = 4096
 
 
 def read_stat(pid, proc=PROC):
@@ -63,15 +68,35 @@ class ProcTable:
         except OSError:
             return []
 
+    def all_children(self, pid):
+        """Child pids of every thread, for memory totals (a worker thread may spawn too)."""
+        out = []
+        for task in glob.glob(os.path.join(self.root, str(pid), "task", "*", "children")):
+            try:
+                with open(task) as f:
+                    out += [int(x) for x in f.read().split()]
+            except (OSError, ValueError):
+                continue
+        return sorted(set(out))
+
+    def rss(self, pid):
+        """Resident memory in bytes (field 2 of /proc/<pid>/statm, in pages), or None."""
+        try:
+            with open(os.path.join(self.root, str(pid), "statm")) as f:
+                return int(f.read().split()[1]) * PAGE
+        except (OSError, IndexError, ValueError):
+            return None
+
 
 class PsTable:
     """Everywhere else (macOS): one `ps` snapshot of every process."""
 
-    def __init__(self, output=None, args=None):
+    def __init__(self, output=None, args=None, rss=None):
         if output is None:
             output = ps_output()
         self.procs = parse_ps(output)
         self._args = args  # pid -> (ppid, command line), read on first use
+        self._rss = rss or {}  # pid -> resident KiB, filled with _args
 
     def info(self, pid):
         return self.procs.get(pid)
@@ -80,16 +105,11 @@ class PsTable:
         if self._args is None:
             self._args = {}
             try:
-                out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,args="], stdout=subprocess.PIPE,
+                out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss=,args="], stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, universal_newlines=True, timeout=5).stdout
             except (OSError, subprocess.SubprocessError):
                 out = ""
-            for line in out.splitlines():
-                parts = line.split(None, 2)
-                try:
-                    self._args[int(parts[0])] = (int(parts[1]), parts[2] if len(parts) > 2 else "")
-                except (IndexError, ValueError):
-                    continue
+            self._args, self._rss = parse_ps_args(out)
         return self._args
 
     def children(self, pid):
@@ -100,6 +120,25 @@ class PsTable:
         args = self._listing().get(pid, (0, ""))[1]
         first, _, rest = args.partition(" ")
         return [first] + ([rest] if rest else []) if first else []
+
+    def rss(self, pid):
+        self._listing()
+        kib = self._rss.get(pid)
+        return kib * 1024 if kib is not None else None
+
+
+def parse_ps_args(output):
+    """`ps -o pid=,ppid=,rss=,args=` -> ({pid: (ppid, command line)}, {pid: rss KiB})."""
+    args, rss = {}, {}
+    for line in output.splitlines():
+        parts = line.split(None, 3)
+        try:
+            pid, ppid, kib = int(parts[0]), int(parts[1]), int(parts[2])
+        except (IndexError, ValueError):
+            continue
+        args[pid] = (ppid, parts[3] if len(parts) > 3 else "")
+        rss[pid] = kib
+    return args, rss
 
 
 def ps_output():
@@ -144,6 +183,30 @@ def ancestors(pid, table, limit=64):
         seen.add(pid)
         out.append(pid)
     return out
+
+
+def descendants(pid, table, limit=1000):
+    """Every process below pid, breadth first."""
+    children = getattr(table, "all_children", table.children)
+    out, seen, todo = [], {pid}, [pid]
+    while todo and len(out) < limit:
+        for c in children(todo.pop(0)):
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+                todo.append(c)
+    return out
+
+
+def memory(pid, table):
+    """{"rss": the process's resident bytes, "tree": with everything below it, "children": how
+    many processes are below it}, or None if the process can't be read. RSS counts shared pages
+    in each process, so the tree total overstates a little."""
+    rss = table.rss(pid)
+    if rss is None:
+        return None
+    kids = descendants(pid, table)
+    return {"rss": rss, "tree": rss + sum(table.rss(k) or 0 for k in kids), "children": len(kids)}
 
 
 def processes_named(name, proc=PROC, ps=None):

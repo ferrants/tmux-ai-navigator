@@ -132,6 +132,79 @@ class ShellTests(unittest.TestCase):
         self.assertEqual((ps.children(10), ps.argv(10)), ([11], ["/bin/bash", "-c echo hi"]))
 
 
+class MemoryTests(unittest.TestCase):
+    def tree(self):
+        root = tempfile.mkdtemp()
+        for pid, kids, pages in ((10, "11 12", 1000), (11, "13", 200), (12, "", None), (13, "", 50)):
+            os.makedirs(os.path.join(root, str(pid), "task", str(pid)))
+            with open(os.path.join(root, str(pid), "task", str(pid), "children"), "w") as f:
+                f.write(kids)
+            if pages is not None:  # 12 exited between listing and reading: no statm
+                with open(os.path.join(root, str(pid), "statm"), "w") as f:
+                    f.write(f"99999 {pages} 300 1 0 500 0\n")
+        return proc.ProcTable(root)
+
+    def test_proc_table_rss_and_tree(self):
+        t = self.tree()
+        self.assertEqual(t.rss(10), 1000 * proc.PAGE)
+        self.assertIsNone(t.rss(12))
+        self.assertEqual(proc.descendants(10, t), [11, 12, 13])
+        self.assertEqual(proc.memory(10, t), {"rss": 1000 * proc.PAGE, "tree": 1250 * proc.PAGE, "children": 3})
+        self.assertEqual(proc.memory(13, t), {"rss": 50 * proc.PAGE, "tree": 50 * proc.PAGE, "children": 0})
+        self.assertIsNone(proc.memory(12, t))
+        # a child started by a worker thread (task 15 of process 13) counts too
+        os.makedirs(os.path.join(t.root, "13", "task", "15"))
+        with open(os.path.join(t.root, "13", "task", "15", "children"), "w") as f:
+            f.write("14")
+        os.makedirs(os.path.join(t.root, "14"))
+        with open(os.path.join(t.root, "14", "statm"), "w") as f:
+            f.write("1 25 0 0 0 0 0\n")
+        self.assertEqual(proc.memory(10, t)["tree"], 1275 * proc.PAGE)
+        self.assertEqual(t.children(13), [])  # background shells still look at the main thread only
+
+    def test_ps_rss(self):
+        args, rss = proc.parse_ps_args("  10     1 409600 /usr/bin/claude --resume x\n"
+                                       "  11    10   2048 node mcp.js\n   12 10\nbad\n")
+        self.assertEqual(args, {10: (1, "/usr/bin/claude --resume x"), 11: (10, "node mcp.js")})
+        t = proc.PsTable(output="", args=args, rss=rss)
+        self.assertEqual((t.rss(10), t.rss(99)), (409600 * 1024, None))
+        self.assertEqual(proc.memory(10, t)["tree"], (409600 + 2048) * 1024)
+
+    def test_descendants_cycle_guard(self):
+        class Table:
+            def children(self, pid):
+                return {1: [2], 2: [1, 3]}.get(pid, [])
+        self.assertEqual(proc.descendants(1, Table()), [2, 3])
+
+    def test_fmt_bytes(self):
+        from tmux_ai_navigator.agents import fmt_bytes
+        M, G = 2 ** 20, 2 ** 30
+        self.assertEqual([fmt_bytes(n) for n in (None, 5 * M, 312 * M, 999 * M, 1000 * M, int(1.44 * G), 12 * G)],
+                         ["", "5M", "312M", "999M", "1.0G", "1.4G", "12G"])
+
+    def test_picker_shows_memory_only_when_on(self):
+        class Scr:
+            def __init__(self):
+                self.text = {}
+
+            def addstr(self, y, x, s, attr=0):
+                row = self.text.setdefault(y, [" "] * 120)
+                row[x:x + len(s)] = list(s)
+        a = ag("app", since=time.time() - 120)
+        a.memory = {"rss": 3 * 2 ** 30, "tree": 4 * 2 ** 30, "children": 2}
+        for on in (False, True):
+            p = Picker(list, memory=on)
+            p.scr = Scr()
+            p.c = p.cs = mock.MagicMock()
+            p.tag_colors = p.tag_colors_sel = [0]
+            p.summarize = lambda sid: {}
+            p.draw_row(0, 0, 80, ("agent", a), False, time.time())
+            p.draw_preview(a, 0, 2, 60, 20, time.time())
+            screen = "\n".join("".join(r) for _, r in sorted(p.scr.text.items()))
+            self.assertEqual("3.0G" in screen, on)
+            self.assertEqual("memory 3.0G · 4.0G with 2 child processes" in screen, on)
+
+
 class LiveTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()

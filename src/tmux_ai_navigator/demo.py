@@ -83,6 +83,9 @@ LOOPS = {
 
 # background shells the Bash tool left running: session index -> commands
 SHELLS = {7: ["npm run test:migrations -- --db pg16"]}
+# memory for `demo --memory`, MiB: (the agent, it with its child processes, how many children)
+MEMORY = [(412, 655, 3), (298, 410, 2), (2530, 3110, 5), (366, 520, 3), (505, 1840, 6), (281, 281, 0),
+          (690, 930, 4), (447, 1290, 5), (322, 470, 2), (1180, 1420, 4), (259, 330, 1), (388, 540, 3)]
 
 
 class Demo:
@@ -108,6 +111,8 @@ class Demo:
                 a.badge, a.badge_style, a.extra_lines = EXTRAS[i]
             a.loops = LOOPS.get(i, [])
             a.shells = [{"pid": None, "started": self.t0 - age, "command": c} for c in SHELLS.get(i, [])]
+            rss, tree, kids = MEMORY[i % len(MEMORY)]
+            a.memory = {"rss": rss * 2 ** 20, "tree": tree * 2 ** 20, "children": kids}
             a.summary = {"user": you, "assistant": said}
             self.list.append(a)
         self.here = "%4"  # as if opened from the dark-mode pane

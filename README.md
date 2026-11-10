@@ -72,6 +72,7 @@ set -g @ainav-extras-interval '5'    # seconds between extras runs (default 5)
 set -g @ainav-notify 'tmux'          # notifications, see below (default tmux)
 set -g @ainav-default-tab 'all'      # tab to open on: all, session or project (default all)
 set -g @ainav-resume '10'            # minutes the "↺ back" view is offered after a jump; 0 = off
+set -g @ainav-memory 'off'           # on: show each agent's memory use (default off)
 ```
 
 The plugin doesn't take a key that's already bound. Many configs use `prefix a` for
@@ -102,6 +103,11 @@ On the right, next to the project:
 |---|---|
 | `$` / `$3` | Claude's Bash tool has shells running in the background (how many) |
 | ↻ | a scheduled loop is running: a `CronCreate` job or `/loop` |
+
+With `@ainav-memory 'on'`, a column after the project shows each agent's resident memory
+(RSS), in orange from 2G. The preview adds the total with the agent's child processes (MCP
+servers, background shells and whatever they started). The total adds up each process's
+RSS, so memory they share is counted more than once. `tmux-ai-nav list --memory` prints both.
 
 At the left edge, `▸` marks the pane you opened the picker from and `↩` the agent `prefix A`
 goes back to.

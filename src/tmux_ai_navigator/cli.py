@@ -22,7 +22,7 @@ import time
 from dataclasses import asdict
 
 from . import state, views
-from .agents import Discovery, fmt_age, sort_agents
+from .agents import Discovery, fmt_age, fmt_bytes, sort_agents
 from .extras import Extras
 from .state import State
 from .tmux import SEP, Tmux, TmuxError, from_env
@@ -73,14 +73,23 @@ def tmux_option(tmux, name):
         return ""
 
 
+def is_on(value):
+    return value.strip().lower() in ("on", "yes", "true", "1")
+
+
 def cmd_list(args):
-    agents = sort_agents(discovery(args, with_extras=True).agents(include_untracked=args.all, record_seen=False), args.sort)
+    disc = discovery(args, with_extras=True)
+    disc.memory = args.memory
+    agents = sort_agents(disc.agents(include_untracked=args.all, record_seen=False), args.sort)
     if args.json:
         print(json.dumps([dict(asdict(a), location=a.location) for a in agents], indent=2))
         return 0
     for a in agents:
-        print("\t".join([a.state_label + (",later" if a.later else "") + (",pinned" if a.pinned else ""), fmt_age(a.age()), a.title,
-                         a.tag, a.location, a.pane_id or "", a.branch, a.cwd]))
+        cols = [a.state_label + (",later" if a.later else "") + (",pinned" if a.pinned else ""), fmt_age(a.age()), a.title,
+                a.tag, a.location, a.pane_id or "", a.branch, a.cwd]
+        if args.memory:
+            cols += [fmt_bytes(a.memory["rss"]) if a.memory else "", fmt_bytes(a.memory["tree"]) if a.memory else ""]
+        print("\t".join(cols))
     return 0
 
 
@@ -167,7 +176,8 @@ def cmd_ui(args):
                         SEP.join(["#{session_id}", "#{session_name}", "#{pane_current_path}"]), check=False)
         found = (info.strip().split(SEP) + ["", "", ""])[:3]
         current, name, cwd = current or found[0] or None, name or found[1], cwd or found[2]
-    opts = tmux_options(tmux, ["@ainav-resume", "@ainav-default-tab"])
+    opts = tmux_options(tmux, ["@ainav-resume", "@ainav-default-tab", "@ainav-memory"])
+    disc.memory = is_on(opts["@ainav-memory"])
     back = None
     try:
         back = views.load_back(disc.state.read(), disc.server(), views.resume_window(opts["@ainav-resume"] or None))
@@ -180,7 +190,7 @@ def cmd_ui(args):
                         previous=lambda agents: getattr(previous_agent(disc, args.client, args.here, agents),
                                                         "pane_id", None),
                         scopes=views.opener_scopes(current, name, cwd), back=back,
-                        default_tab=opts["@ainav-default-tab"] or "all")
+                        default_tab=opts["@ainav-default-tab"] or "all", memory=disc.memory)
     if choice is None:
         if args.origin:
             tmux.run("select-window", "-t", args.origin, check=False)
@@ -320,7 +330,7 @@ def cmd_demo(args):
     locale.setlocale(locale.LC_ALL, "")
     data = demo.Demo()
     choice, _ = pick(data.agents, here_pane=data.here, toggle_later=data.toggle_later, summarize=data.summary,
-                     toggle_pin=data.toggle_pin, scopes=views.opener_scopes(*data.opener))
+                     toggle_pin=data.toggle_pin, scopes=views.opener_scopes(*data.opener), memory=args.memory)
     if choice is not None:
         print(f"would jump to {choice.location} ({choice.title})")
     return 0
@@ -339,6 +349,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.add_argument("--all", action="store_true", help="include sessions not running in tmux")
     p.add_argument("--sort", choices=["priority", "session"], default="priority")
+    p.add_argument("--memory", action="store_true", help="add each agent's memory, alone and with its child processes")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("seen", help="record panes on screen as seen (for tmux hooks)")
@@ -380,6 +391,7 @@ def main(argv=None):
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("demo", help="run the picker on made-up sessions (no tmux needed)")
+    p.add_argument("--memory", action="store_true", help="show the memory column, as @ainav-memory does")
     p.set_defaults(func=cmd_demo)
 
     args = ap.parse_args(argv)

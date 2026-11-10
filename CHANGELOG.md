@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Memory: `@ainav-memory 'on'` adds each agent's resident memory to its row (orange from 2G),
+  and the preview shows it with the agent's child processes. Read from `/proc` on Linux and
+  `ps` on macOS. `tmux-ai-nav list --memory` and `demo --memory` too.
 - Background shells: `$` (or `$3`) next to the project when Claude's Bash tool has shells still
   running, found in the process tree whatever the session's status; the preview lists their
   commands and how long they've run. The `$` status icon for idle-with-a-shell is now `○`.
