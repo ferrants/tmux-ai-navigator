@@ -212,6 +212,7 @@ class EventLog:
         self.ended_ts = 0.0
         self.resumed_ts = 0.0  # when a real permission wait ended: busy again from then
         self.pending = []      # [(tool name, requested at)]
+        self.nested = 0        # subagent turns running inside the main one
         self.boundary = False
 
     def read(self):
@@ -261,9 +262,14 @@ class EventLog:
         kind, ts = d.get("type"), _ts(d.get("ts"))
         if kind == "turn_started":
             if d.get("session_relationship", "primary") != "primary":
+                self.nested += 1  # its turn_ended doesn't say whose it is: skip that one too
                 return
             self.turn, self.turn_ts, self.resumed_ts, self.pending, self.boundary = True, ts, 0.0, [], True
+            self.nested = 0
         elif kind == "turn_ended":
+            if self.nested:
+                self.nested -= 1
+                return
             self.turn, self.ended_ts, self.pending, self.boundary = False, ts, [], True
         elif kind == "permission_requested":
             self.pending.append((d.get("tool_name"), ts))

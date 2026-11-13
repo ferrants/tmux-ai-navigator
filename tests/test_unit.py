@@ -1333,8 +1333,12 @@ class GrokTests(unittest.TestCase):
             f.write('ded", "outcome": "cancelled"}\n{not json\n')
         log.read()
         self.assertEqual(log.status(T + 50), ("idle", T + 40))
-        grok_events(path, [(T + 60, "turn_started", {"session_relationship": "subagent"}),
-                           (T + 61, "permission_requested", {"tool_name": "bash"}),
+        grok_events(path, [(T + 55, "turn_started", {"session_relationship": "primary"}),
+                           (T + 60, "turn_started", {"session_relationship": "subagent"}),
+                           (T + 61, "turn_ended", {"outcome": "completed"})])
+        log.read()
+        self.assertEqual(log.status(T + 62), ("busy", T + 55))              # a subagent's turn ending isn't ours
+        grok_events(path, [(T + 61, "permission_requested", {"tool_name": "bash"}),
                            (T + 62, "turn_ended", {"outcome": "error"})])
         log.read()
         self.assertEqual(log.status(T + 70), ("idle", T + 62))              # turn_ended clears requests
