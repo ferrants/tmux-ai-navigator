@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- grok: sessions of xAI's grok TUI are listed next to Claude's and Codex's (marked `gk`), with
+  status (working, waiting for a tool permission, idle), the generated title, the preview,
+  done tracking and notifications. Read from `~/.grok` (`$GROK_HOME`); nothing to set up.
 - Memory: `@ainav-memory 'on'` adds each agent's resident memory to its row (orange from 2G),
   and the preview shows it with the agent's child processes. Read from `/proc` on Linux and
   `ps` on macOS. `tmux-ai-nav list --memory` and `demo --memory` too.

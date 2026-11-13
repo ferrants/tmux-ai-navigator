@@ -6,8 +6,8 @@ tmux-prefix + a  # opens a navigator of your ai agents that run in tmux windows
 
 A picker for the AI coding agents running in your tmux panes. It's like
 [herdr](https://herdr.dev)'s agent list, but for tmux. It shows every
-[Claude Code](https://claude.com/claude-code) and [Codex CLI](https://github.com/openai/codex)
-session in every tmux session and window,
+[Claude Code](https://claude.com/claude-code), [Codex CLI](https://github.com/openai/codex) and
+[grok](https://x.ai/cli) session in every tmux session and window,
 grouped by what needs you: sessions **waiting** for an answer, ones that **finished since
 you last looked**, and ones you flagged for **later**. Then come sessions that are working,
 active today, and older ones. Sessions you **pin** stay above all of that until you unpin them. A preview shows each session's last prompt and reply. You can
@@ -23,9 +23,9 @@ Try it without any sessions of your own: `bin/tmux-ai-nav demo`.
 - tmux 3.0 or newer. On tmux 3.2+ the picker opens in a popup; on 3.0 and 3.1 it opens in
   a temporary window.
 - Python 3.8 or newer, standard library only.
-- Claude Code and/or Codex CLI. Claude Code writes a status file for each running session in
-  `~/.claude/sessions/`; Codex sessions are found from the panes they run in (see
-  [Codex](#codex)). Nothing to install or configure for either.
+- Claude Code, Codex CLI and/or grok. Claude Code writes a status file for each running
+  session in `~/.claude/sessions/`; Codex and grok sessions are found from the panes they run
+  in (see [Codex](#codex) and [grok](#grok)). Nothing to install or configure for any of them.
 
 ## Install
 
@@ -87,7 +87,7 @@ to choose a key (`@ainav-last-key` for `prefix A`, `@ainav-pin-key` for `prefix 
 
 Each row shows the tmux window name, the session's title, the project (the tmux session name
 without a leading number, e.g. `2api` → `api`), and how long it has been in its current state.
-Codex sessions are marked `cx`.
+Codex sessions are marked `cx`, grok sessions `gk`.
 
 | icon | |
 |---|---|
@@ -144,7 +144,7 @@ Pins are for the sessions you want to keep in mind. A pinned session sits in a P
 at the top (in every tab, and above the project groups with `ctrl-s`), most recently active
 first, and stays there after you reply. Its row still shows whether it's waiting, done or
 working, and it still counts in "need you". `ctrl-t` pins in the picker, `prefix P` pins the
-session in the current pane; press again to unpin. Pins belong to the Claude or Codex
+session in the current pane; press again to unpin. Pins belong to the agent's
 session, so they survive a tmux restart and come back when you resume the session.
 
 `prefix A` jumps back to the agent you were on before, across tmux sessions and windows, and
@@ -201,6 +201,23 @@ conversation belongs to can't be learned from its hooks or its process. Instead:
   conversation log. A pane is matched to its conversation by the name in its title, by
   `codex resume <id>`, or else by folder and start time. A TUI that hasn't been prompted yet
   has no conversation and is listed as idle.
+
+## grok
+
+grok sessions show up the same way: every `grok` TUI running in a tmux pane is listed (not
+`grok -p`, `grok agent` or other subcommands). grok keeps everything needed in `$GROK_HOME`
+(`~/.grok`), read-only:
+
+- **The session** a TUI is showing comes from `active_sessions.json`, which lists each running
+  TUI with its process id and start time.
+- **Status** comes from the session's event log: working while a turn runs, waiting while a
+  tool permission prompt is open. grok logs a permission check for every tool call, including
+  the ones it allows by itself, so a prompt counts as waiting once it has been open for 1.5
+  seconds.
+- **The title** is the one grok generates for the conversation, and the preview shows the last
+  prompt you typed and grok's last reply.
+
+A TUI that hasn't been prompted yet is listed as idle. Tested with grok 1.0.77 on Linux.
 
 ## Notifications
 
@@ -297,7 +314,8 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
   windows linked into several sessions.
 - **Notifications.** `tmux-ai-nav watch` polls the session files twice a second and only
   looks at panes and titles when a session's status actually changes. While Codex TUIs are
-  running, it also reads pane titles once a second (one tmux call).
+  running, it also reads pane titles once a second (one tmux call). While grok TUIs are running,
+  it reads their event logs once a second, only the lines added since the last read.
 - **Done.** tmux hooks (`after-select-window`, `after-select-pane`, `client-session-changed`, …)
   run `tmux-ai-nav seen`, which records the panes on screen and the panes that just left it.
   A session is "done" when it went idle after real work, later than its pane was last seen.
@@ -317,9 +335,11 @@ example. You can also pass `--extras 'command'` to `tmux-ai-nav`.
   tool catches up.
 - Closing a terminal window without detaching doesn't run tmux's detach hook, so a session
   that finishes while that window is gone may not show as done.
-- Claude Code and Codex CLI only. Claude sessions that aren't inside tmux show up in
-  `list --all` only; Codex sessions outside tmux aren't listed (their status comes from the
-  pane).
+- Claude Code, Codex CLI and grok only. Claude sessions that aren't inside tmux show up in
+  `list --all` only; Codex and grok sessions outside tmux aren't listed (they're found from
+  their panes).
+- grok's files are internals too, and only grok 1.0.77 on Linux has been tested. On macOS a
+  grok TUI is matched to its session by start time, which hasn't been checked yet.
 - Matching a Codex pane to its conversation is a best guess when the title has no name (older
   Codex versions) and several Codex TUIs share a folder: two of them may swap previews.
 

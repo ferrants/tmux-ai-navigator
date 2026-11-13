@@ -13,7 +13,7 @@ from .views import OLDER
 
 MODES = list(views.MODES)
 ITALIC = getattr(curses, "A_ITALIC", 0)
-KIND_MARKS = {"codex": "cx"}  # shown on rows of agents other than Claude Code
+KIND_MARKS = {"codex": "cx", "grok": "gk"}  # shown on rows of agents other than Claude Code
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TICK_MS = 250
 REFRESH_S = 1.0

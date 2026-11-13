@@ -19,7 +19,7 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from . import claude, codex
+from . import claude, codex, grok
 
 TAIL_BYTES = 512 * 1024
 _paths = {}
@@ -349,6 +349,8 @@ def summary(session_id):
     """{"title", "user", "assistant"} (any may be empty)."""
     if codex.knows(session_id):
         return codex.summary(session_id)
+    if grok.knows(session_id):
+        return grok.summary(session_id)
     path = find(session_id)
     if not path:
         return {}

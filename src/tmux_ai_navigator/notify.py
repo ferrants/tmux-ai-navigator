@@ -29,6 +29,7 @@ import wave
 
 POLL_S = 0.5
 CODEX_POLL_S = 1.0  # Codex status lives in pane titles: one tmux call per poll
+POLLED_S = 1.0      # grok status: reads the process table and grok's files
 OPTIONS_S = 5.0
 SOUNDS = {
     "linux": {"done": "/usr/share/sounds/freedesktop/stereo/complete.oga",
@@ -267,6 +268,8 @@ class Watcher:
         self._opts_at = 0.0
         self.codex = {}  # (pid, "codex") -> (status, since, started), since as first observed
         self._codex_at = 0.0
+        self.grok = {}   # (pid, session id) -> (status, since, started)
+        self._grok_at = 0.0
 
     def step(self):
         now = self.clock()
@@ -274,6 +277,7 @@ class Watcher:
             self.opts, self._opts_at = options(self.disc.tmux), now
         cur = snapshot(self.disc.files.read())
         cur.update(self.codex_snapshot(now))
+        cur.update(self.grok_snapshot(now))
         if self.prev is not None:
             wanted = {e.strip() for e in self.opts.get("notify-on", "").split(",")}
             try:
@@ -319,6 +323,23 @@ class Watcher:
             old = self.codex.get(key)
             cur[key] = (status, old[1] if old and old[0] == status else now, started)
         self.codex = cur
+        return cur
+
+    def grok_snapshot(self, now):
+        """grok TUIs' status from grok's event logs, polled every POLLED_S. If the read fails,
+        the last snapshot stands, and so does a session's last known status while its events
+        can't be read (so neither looks like a change)."""
+        if now - self._grok_at < POLLED_S:
+            return self.grok
+        self._grok_at = now
+        try:
+            states = self.disc.grok_states()
+        except Exception:
+            return self.grok
+        cur = {}
+        for key, val in states.items():
+            cur[key] = self.grok[key] if val[0] == "unknown" and key in self.grok else val
+        self.grok = cur
         return cur
 
     def run(self, alive):

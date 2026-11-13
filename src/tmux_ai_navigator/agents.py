@@ -6,12 +6,13 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from . import claude, codex, extras as extrasmod, state, transcript
+from . import claude, codex, extras as extrasmod, grok, state, transcript
 from . import proc as procmod
 
 DAY = 86400
-CODEX_SCAN_S = 3.0
-GENERIC_WINDOWS = {"", "bash", "zsh", "sh", "fish", "claude", "codex", "node", "python", "python3"}
+SCAN_S = 3.0  # how often the process table is scanned for Codex and grok TUIs
+POLLED = {"codex", "grok"}  # agents found from their processes (their records use seconds)
+GENERIC_WINDOWS = {"", "bash", "zsh", "sh", "fish", "claude", "codex", "grok", "node", "python", "python3"}
 SECTIONS = ["needs", "working", "today", "older"]
 SECTION_TITLES = {"pinned": "PINNED", "needs": "NEEDS YOU", "working": "WORKING", "today": "TODAY", "older": "OLDER"}
 
@@ -236,8 +237,9 @@ class Discovery:
         self.domain = procmod.pid_domain(proc)
         self.state = state_store or state.State()
         self.threads = codex.Threads()
+        self.grok_sessions = grok.ActiveSessions()
         self._server = None
-        self._codex = (0.0, [])
+        self._scan = (0.0, {})
         transcript.load_title_cache()
 
     def server(self):
@@ -245,17 +247,27 @@ class Discovery:
             self._server = self.tmux.server_pid()
         return self._server
 
-    def codex_tuis(self, table, now=None):
-        """Codex TUI processes, re-scanned every few seconds (a scan reads the process table)."""
+    def polled(self, table, now=None):
+        """{"codex": [(pid, argv)], "grok": [...]}: the TUI processes, re-scanned every few
+        seconds in one pass over the process table."""
         now = now or time.time()
-        at, found = self._codex
-        if now - at >= CODEX_SCAN_S:
+        at, found = self._scan
+        if now - at >= SCAN_S:
+            found = {}
             try:
-                found = codex.tuis(table, procmod.processes_named("codex", self.proc))
-            except Exception:  # never let Codex discovery break the Claude list
-                found = []
-            self._codex = (now, found)
-        return [(pid, argv) for pid, argv in found if table.info(pid)]
+                procs = procmod.processes_matching(lambda n: n == "codex" or grok.is_name(n), self.proc)
+            except Exception:  # never let this break the Claude list
+                procs = []
+            for kind, mod, match in (("codex", codex, lambda n: n == "codex"), ("grok", grok, grok.is_name)):
+                try:
+                    found[kind] = mod.tuis(table, [(pid, argv) for pid, argv, name in procs if match(name)])
+                except Exception:
+                    found[kind] = []
+            self._scan = (now, found)
+        return {kind: [(pid, argv) for pid, argv in v if table.info(pid)] for kind, v in found.items()}
+
+    def codex_tuis(self, table, now=None):
+        return self.polled(table, now).get("codex", [])
 
     def codex_states(self):
         """{pid: (status, process start)} of Codex TUIs in panes, from their pane titles
@@ -274,10 +286,23 @@ class Discovery:
                             procmod.start_epoch(info[1], self.proc) if info else 0.0)
         return out
 
+    def grok_states(self, now=None):
+        """{(pid, session id): (status, since, process start)} of grok TUIs, from grok's files
+        (for the notification watcher: no tmux calls)."""
+        table = procmod.snapshot(self.proc)
+        out = {}
+        for pid, _ in self.polled(table, now).get("grok", []):
+            s = grok.state(pid, table, self.grok_sessions, now, self.proc)
+            out[(pid, s["sessionId"])] = (s["status"], s["since"] or 0.0,
+                                          procmod.start_epoch(s["procStart"], self.proc) if s["procStart"] else 0.0)
+        return out
+
     def agents(self, current_session=None, include_untracked=False, record_seen=True, strict=False):
         table = procmod.snapshot(self.proc)
         entries = claude.live(self.files.read(), table, self.domain)
-        found = self.codex_tuis(table)
+        polled = self.polled(table)
+        found = polled.get("codex", [])
+        found_grok = polled.get("grok", [])
         panes = self.tmux.panes(strict=True) if strict else self.tmux.panes()
         visible = {p.pane_id for p in panes if p.on_screen}
         if record_seen:
@@ -285,16 +310,20 @@ class Discovery:
         else:
             st = self.state.read()
         view = state.server_view(st, self.server())
-        mapping = map_to_panes([d["pid"] for d in entries] + [pid for pid, _ in found], panes, table,
+        mapping = map_to_panes([d["pid"] for d in entries] + [pid for pid, _ in found + found_grok], panes, table,
                                current_session)
         try:
             entries += codex.entries(found, mapping, table, self.threads, proc=self.proc)
         except Exception:
             pass
+        try:
+            entries += grok.entries(found_grok, mapping, table, self.grok_sessions, proc=self.proc)
+        except Exception:
+            pass
         out = []
         for d in entries:
             cwd = text(d.get("cwd"))
-            if d.get("agent") == "codex":
+            if d.get("agent") in POLLED:
                 since, started = d.get("since"), d.get("started")
             else:
                 since = d.get("statusUpdatedAt") or d.get("updatedAt")
@@ -309,7 +338,7 @@ class Discovery:
                 p = hits[0]
                 a.pane_id, a.tmux_session_id, a.tmux_session = p.pane_id, p.session_id, p.session_name
                 a.window_id, a.window_index, a.window_name = p.window_id, p.window_index, p.window_name
-                if a.kind == "claude":  # Codex's title is its status line, handled in codex.py
+                if a.kind == "claude":  # Codex's and grok's titles are handled in their modules
                     a.pane_title = p.pane_title
                 a.other_sessions = [h.session_name for h in hits[1:]]
                 a.session_ids = [h.session_id for h in hits]
@@ -326,11 +355,11 @@ class Discovery:
                 a.memory = procmod.memory(a.pid, table)
             out.append(a)
         names = {d["sessionId"]: (text(d.get("threadName")), text(d.get("firstMessage")))
-                 for d in entries if d.get("agent") == "codex"}
+                 for d in entries if d.get("agent") in POLLED}
         info = self.extras.get(out)
         for a in out:
             extrasmod.apply(a, info.get(a.session_id) or {})
-            a.title = pick_title(a, names.get(a.session_id, ("", "")) if a.kind == "codex" else None)
+            a.title = pick_title(a, names.get(a.session_id, ("", "")) if a.kind in POLLED else None)
             if a.kind == "claude":
                 a.loops = transcript.loops(a.session_id, a.started, a.status == "busy")
         transcript.save_title_cache()

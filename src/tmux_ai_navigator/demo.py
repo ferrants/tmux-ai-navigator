@@ -67,6 +67,9 @@ SESSIONS = [
 ]
 
 
+# rows from agents other than Claude Code: index -> kind
+KINDS = {6: "codex", 11: "grok"}
+
 # what an extras command (see extras.py) might add: session id index -> (badge, style, preview lines)
 EXTRAS = {
     0: ("✎3", "info", ["3 uncommitted files", "1 commit not pushed"]),
@@ -96,11 +99,12 @@ class Demo:
         self.list = []
         for i, (sess, win, title, status, age, flags, branch, you, said) in enumerate(SESSIONS):
             project = sess.lstrip("0123456789")
-            a = Agent(kind="claude", pid=1000 + i, session_id=f"demo-{i:02d}", name=project, status=status,
+            kind = KINDS.get(i, "claude")
+            a = Agent(kind=kind, pid=1000 + i, session_id=f"demo-{i:02d}", name=project, status=status,
                       cwd=f"~/code/{project}", since=self.t0 - age, started=self.t0 - age - 2 * H,
                       pane_id=f"%{i + 1}", tmux_session_id=f"${sess[0]}", tmux_session=sess,
                       window_id=f"@{i + 1}", window_index=i % 9 + 1, window_name=win or "claude",
-                      pane_title=f"✳ {title}", branch=branch, title=title)
+                      pane_title=f"✳ {title}" if kind == "claude" else "", branch=branch, title=title)
             a.session_ids = [a.tmux_session_id]
             a.done = "done" in flags
             if "later" in flags:

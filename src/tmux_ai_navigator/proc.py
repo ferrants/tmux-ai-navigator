@@ -210,10 +210,17 @@ def memory(pid, table):
 
 
 def processes_named(name, proc=PROC, ps=None):
-    """[(pid, argv)] of processes whose executable is called `name`.
+    """[(pid, argv)] of processes whose executable is called `name`."""
+    return [(pid, argv) for pid, argv, _ in processes_matching(lambda n: n == name, proc, ps)]
 
-    Linux: /proc/<pid>/comm, then the command line. Elsewhere: one `ps` listing, matching the
-    basename of the first word (paths with spaces in them are not expected here).
+
+def processes_matching(match, proc=PROC, ps=None):
+    """[(pid, argv, name)] of processes whose executable name passes `match(name)`, from one
+    pass over the process table.
+
+    Linux: /proc/<pid>/comm (the first 15 bytes of the name), then the command line. Elsewhere:
+    one `ps` listing, matching the basename of the first word (paths with spaces in them are
+    not expected here).
     """
     out = []
     if ps is None and os.path.isdir(os.path.join(proc, "self")):
@@ -226,13 +233,14 @@ def processes_named(name, proc=PROC, ps=None):
                 continue
             try:
                 with open(os.path.join(proc, p, "comm")) as f:
-                    if f.read().strip() != name:
-                        continue
+                    name = f.read().strip()
+                if not match(name):
+                    continue
                 with open(os.path.join(proc, p, "cmdline"), "rb") as f:
                     argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
             except OSError:
                 continue
-            out.append((int(p), argv))
+            out.append((int(p), argv, name))
         return out
     if ps is None:
         try:
@@ -242,9 +250,9 @@ def processes_named(name, proc=PROC, ps=None):
             return out
     for line in ps.splitlines():
         parts = line.split()
-        if len(parts) >= 2 and os.path.basename(parts[1]) == name:
+        if len(parts) >= 2 and match(os.path.basename(parts[1])):
             try:
-                out.append((int(parts[0]), parts[1:]))
+                out.append((int(parts[0]), parts[1:], os.path.basename(parts[1])))
             except ValueError:
                 continue
     return out

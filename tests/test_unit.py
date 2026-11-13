@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from tmux_ai_navigator import agents, claude, codex, extras, markdown, notify, proc, state, transcript, views  # noqa: E402
+from tmux_ai_navigator import agents, claude, codex, extras, grok, markdown, notify, proc, state, transcript, views  # noqa: E402
 from tmux_ai_navigator.agents import Agent, arrange, clean_title, fmt_age, map_to_panes, pick_title, sort_agents  # noqa: E402
 from tmux_ai_navigator.tmux import Pane  # noqa: E402
 from tmux_ai_navigator.ui import Picker, build_items, fit, fit_left, matches, width  # noqa: E402
@@ -1241,3 +1241,222 @@ class CodexTests(unittest.TestCase):
         now[0] = 105.5
         w.step()
         self.assertEqual(sent, [("t1", "done"), ("t1", "waiting")])
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int(round((t % 1) * 1000))
+
+
+def grok_events(path, events, mode="a"):
+    with open(path, mode) as f:
+        for t, typ, extra in events:
+            f.write(json.dumps(dict({"ts": iso(t), "type": typ}, **extra)) + "\n")
+
+
+class GrokTests(unittest.TestCase):
+    T = 1794555000.0
+
+    def test_is_tui(self):
+        g = "/home/u/.grok/bin/grok"
+        self.assertTrue(grok.is_tui([g]))
+        self.assertTrue(grok.is_tui(["grok", "fix the tests"]))                  # a first prompt
+        self.assertTrue(grok.is_tui(["grok", "dashboard"]))
+        self.assertTrue(grok.is_tui(["grok", "-m", "sessions", "hi"]))           # "sessions" is the model here
+        self.assertTrue(grok.is_tui(["grok", "--model=x", "-r"]))
+        self.assertTrue(grok.is_tui(["grok", "-r", "abc", "--always-approve"]))
+        self.assertTrue(grok.is_tui(["grok", "--", "sessions"]))                 # a prompt, not the subcommand
+        self.assertTrue(grok.is_tui(["/x/grok-1.0.77-linux-x86_64", "-c"]))
+        self.assertFalse(grok.is_tui(["grok", "sessions", "list"]))
+        self.assertFalse(grok.is_tui(["grok", "--cwd", "/w", "agent", "stdio"]))
+        self.assertFalse(grok.is_tui(["grok", "-p", "review this"]))
+        self.assertFalse(grok.is_tui(["grok", "fix it", "--prompt-file", "x"]))  # headless flag after a prompt
+        self.assertFalse(grok.is_tui(["grok", "-mx", "--single=hi"]))
+        self.assertFalse(grok.is_tui(["grok", "--version"]))
+        self.assertFalse(grok.is_tui(["groker"]))
+        self.assertFalse(grok.is_tui(["node", "/usr/bin/grok"]))
+        self.assertTrue(grok.is_name("grok-1.0.77-lin") and grok.is_name("grok") and not grok.is_name("grok_exporter"))
+
+    def test_processes_matching_one_pass(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "self"))
+        write_proc(root, 70, 1, 500, ["/x/codex"])
+        write_proc(root, 71, 1, 500, ["/x/grok-1.0.77-linux-x86_64"])
+        write_proc(root, 72, 1, 500, ["/bin/bash"])
+        got = sorted(proc.processes_matching(lambda n: n == "codex" or grok.is_name(n), root))
+        self.assertEqual(got, [(70, ["/x/codex"], "codex"), (71, ["/x/grok-1.0.77-linux-x86_64"], "grok-1.0.77-lin")])
+        ps = "  70 /opt/homebrew/bin/codex\n  71 /Users/u/.grok/bin/grok -c\n"
+        self.assertEqual([p for p, _, _ in proc.processes_matching(grok.is_name, ps=ps)], [71])
+
+    def test_active_sessions_lookup(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "active_sessions.json")
+        rows = [{"session_id": "old", "pid": 9, "pid_start": 500, "cwd": "/w", "opened_at": iso(self.T)},
+                {"session_id": "new", "pid": 9, "pid_start": 500, "cwd": "/w", "opened_at": iso(self.T + 60)},
+                {"session_id": "stale", "pid": 8, "pid_start": 1, "cwd": "/w", "opened_at": iso(self.T)},
+                {"bad": 1}]
+        with open(path, "w") as f:
+            json.dump(rows, f)
+        reg = grok.ActiveSessions(path)
+        self.assertEqual(reg.lookup(9, "500", 0.0), ("new", "/w"))
+        self.assertIsNone(reg.lookup(8, "777", 0.0))                       # pid reused by another process
+        mac = "Fri Nov 13 07:24:20 2026"
+        self.assertEqual(reg.lookup(9, mac, self.T + 30), ("new", "/w"))    # opened after the process started
+        self.assertIsNone(reg.lookup(9, mac, 0.0))                         # start unknown: don't guess
+        with open(path, "w") as f:
+            f.write("{half")
+        self.assertEqual(reg.lookup(9, "500", 0.0), ("new", "/w"))         # a bad read keeps the last copy
+        os.remove(path)
+        self.assertIsNone(reg.lookup(9, "500", 0.0))
+
+    def test_event_states(self):
+        T = self.T
+        path = os.path.join(tempfile.mkdtemp(), "events.jsonl")
+        grok_events(path, [(T, "mcp_init_completed", {}), (T + 1, "turn_started", {"session_relationship": "primary"}),
+                           (T + 2, "permission_requested", {"tool_name": "read"}),
+                           (T + 2, "permission_resolved", {"tool_name": "read", "wait_ms": 0})], "w")
+        log = grok.EventLog(path)
+        self.assertTrue(log.read())
+        self.assertEqual(log.status(T + 100), ("busy", T + 1))             # an auto-allowed tool: never waiting
+        grok_events(path, [(T + 3, "permission_requested", {"tool_name": "bash"})])
+        log.read()
+        self.assertEqual(log.status(T + 3.5), ("busy", T + 1))              # within the grace period
+        self.assertEqual(log.status(T + 10), ("waiting", T + 3))
+        grok_events(path, [(T + 20, "permission_resolved", {"tool_name": "other"})])
+        log.read()
+        self.assertEqual(log.status(T + 21)[0], "waiting")                  # an unrelated answer
+        grok_events(path, [(T + 30, "permission_resolved", {"tool_name": "bash"})])
+        with open(path, "a") as f:
+            f.write('{"ts": "%s", "type": "turn_en' % iso(T + 40))          # still being written
+        log.read()
+        self.assertEqual(log.status(T + 41), ("busy", T + 30))              # busy again since the answer
+        with open(path, "a") as f:
+            f.write('ded", "outcome": "cancelled"}\n{not json\n')
+        log.read()
+        self.assertEqual(log.status(T + 50), ("idle", T + 40))
+        grok_events(path, [(T + 60, "turn_started", {"session_relationship": "subagent"}),
+                           (T + 61, "permission_requested", {"tool_name": "bash"}),
+                           (T + 62, "turn_ended", {"outcome": "error"})])
+        log.read()
+        self.assertEqual(log.status(T + 70), ("idle", T + 62))              # turn_ended clears requests
+        # a fresh reader (a new `list`) agrees, and a replaced file is read from the start
+        fresh = grok.EventLog(path)
+        fresh.read()
+        self.assertEqual(fresh.status(T + 70), ("idle", T + 62))
+        os.remove(path)
+        grok_events(path, [(T + 80, "turn_started", {})], "w")
+        log.read()
+        self.assertEqual(log.status(T + 81), ("busy", T + 80))
+        os.remove(path)
+        self.assertFalse(log.read())
+        self.assertEqual(log.status(T + 81), ("busy", T + 80))              # unreadable: the state stands
+
+    def test_cold_read_starts_near_the_end(self):
+        T = self.T
+        path = os.path.join(tempfile.mkdtemp(), "events.jsonl")
+        noise = [(T, "phase_changed", {"phase": "x" * 200})] * 40
+        with mock.patch.object(grok, "COLD_BYTES", 4096):
+            grok_events(path, [(T, "turn_started", {})] + noise, "w")       # the turn began before the tail
+            log = grok.EventLog(path)
+            log.read()
+            self.assertEqual(log.status(T + 5), ("busy", T))
+            grok_events(path, noise + [(T + 9, "turn_ended", {})] + noise)
+            log = grok.EventLog(path)
+            log.read()
+            self.assertEqual(log.status(T + 50), ("idle", T + 9))
+
+    def test_preview(self):
+        path = os.path.join(tempfile.mkdtemp(), "chat_history.jsonl")
+        rows = [{"type": "system", "content": "You are Grok"},
+                {"type": "user", "content": [{"type": "text", "text": "<user_info>\nOS</user_info>"}]},
+                {"type": "user", "prompt_index": 0, "content": [{"type": "text", "text": "<user_query>\nfix it\n</user_query>"}]},
+                {"type": "assistant", "content": "Fixed.", "tool_calls": []},
+                {"type": "user", "synthetic_reason": "x", "prompt_index": 1,
+                 "content": [{"type": "text", "text": "<system-reminder>skills</system-reminder>"}]},
+                {"type": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+                {"type": "tool_result", "content": "ok"}]
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        self.assertEqual(grok.chat_tail(path), {"user": "fix it", "assistant": "Fixed."})
+        self.assertEqual(grok.pane_name("Fix the login bug - grok"), "Fix the login bug")
+        self.assertEqual(grok.pane_name("Called whoami on Marketplace plu… - grok"), "")
+
+    def test_discovery_lists_grok_panes(self):
+        T = self.T
+        root, home, sessions = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "self"))
+        with open(os.path.join(root, "stat"), "w") as f:
+            f.write("cpu 1 2 3\nbtime 1794550000\n")
+        write_stat(root, 50, 1, 100, comm="bash")
+        write_proc(root, 70, 50, 120, ["grok"])                              # the TUI
+        write_stat(root, 51, 1, 100, comm="bash")
+        write_proc(root, 71, 51, 140, ["grok", "-p", "review this"])         # headless
+        write_proc(root, 72, 51, 150, ["grok", "sessions", "list"])          # a subcommand
+        write_stat(root, 52, 1, 100, comm="bash")
+        write_proc(root, 73, 52, 160, ["grok"])                              # not prompted yet
+        sdir = os.path.join(home, "sessions", "%2Fw%2Fapi", "g1")
+        os.makedirs(sdir)
+        with open(os.path.join(home, "active_sessions.json"), "w") as f:
+            json.dump([{"session_id": "g1", "pid": 70, "pid_start": 120, "cwd": "/w/api", "opened_at": iso(T)}], f)
+        with open(os.path.join(sdir, "summary.json"), "w") as f:
+            json.dump({"generated_title": "Fix login", "created_at": iso(T), "last_active_at": iso(T + 5)}, f)
+        grok_events(os.path.join(sdir, "events.jsonl"), [(T + 10, "turn_started", {})], "w")
+        with open(os.path.join(sdir, "chat_history.jsonl"), "w") as f:
+            f.write(json.dumps({"type": "user", "prompt_index": 0, "content": [{"type": "text", "text": "fix it"}]}) + "\n")
+
+        class Tmux(FakeTmux):
+            def panes(self, strict=False):
+                return [Pane("%1", 50, "$1", "2api", "@1", 1, "grok", True, True, "/w/api", "Fix login - grok"),
+                        Pane("%2", 51, "$1", "2api", "@2", 2, "bash", True, False, "/w/api", ""),
+                        Pane("%3", 52, "$1", "2api", "@3", 3, "grok", True, False, "/w/web", "grok")]
+
+        with mock.patch.dict(os.environ, {"GROK_HOME": home, "CODEX_HOME": home}):
+            d = agents.Discovery(Tmux(), sessions, proc=root, state_store=state.State(tempfile.mkdtemp()))
+            got = sorted(d.agents(record_seen=False), key=lambda a: a.pid)
+            self.assertEqual([(a.kind, a.pid, a.session_id, a.status, a.title, a.pane_id, a.cwd) for a in got],
+                             [("grok", 70, "g1", "busy", "Fix login", "%1", "/w/api"),
+                              ("grok", 73, "grok-73", "idle", "web", "%3", "/w/web")])
+            self.assertAlmostEqual(got[0].since, T + 10, places=2)
+            self.assertAlmostEqual(got[0].started, T, places=2)
+            self.assertEqual(got[1].since, proc.start_epoch("160", root))
+            self.assertEqual(transcript.summary("g1")["user"], "fix it")
+            self.assertEqual(d.grok_states(), {(70, "g1"): ("busy", got[0].since, proc.start_epoch("120", root)),
+                                               (73, "grok-73"): ("idle", got[1].since, got[1].since)})
+
+    def test_watcher_notifies_for_grok(self):
+        status = ["busy"]
+
+        class Files:
+            def read(self):
+                return []
+
+        class Disc:
+            tmux = None
+            files = Files()
+
+            def codex_states(self):
+                raise RuntimeError("tmux is down")  # must not stop grok notifications
+
+            def grok_states(self):
+                return {(70, "g1"): (status[0], 50.0, 1.0)}
+
+            def agents(self, record_seen=True, strict=False):
+                return [Agent(kind="grok", pid=70, session_id="g1", name="api", cwd="/w", status=status[0],
+                              since=None, pane_id="%1")]
+
+        sent, now = [], [100.0]
+        w = notify.Watcher(Disc(), deliver_fn=lambda t, a, k, o: sent.append((a.session_id, k)),
+                           clock=lambda: now[0])
+        w._opts_at = 1e18
+        w.step()
+        status[0] = "unknown"   # a failed read: not a change
+        now[0] = 101.0
+        w.step()
+        now[0] = 102.5
+        w.step()
+        self.assertEqual(sent, [])
+        status[0] = "idle"
+        now[0] = 104.0
+        w.step()
+        now[0] = 105.5
+        w.step()
+        self.assertEqual(sent, [("g1", "done")])
